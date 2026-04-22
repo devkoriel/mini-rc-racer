@@ -10,13 +10,13 @@ const VALID_TRACK = {
     { x: 0, y: 0, z: 0, halfWidth: 4 },
     { x: 10, y: 0, z: 0, halfWidth: 4 },
     { x: 10, y: 0, z: 10, halfWidth: 4 },
-    { x: 0, y: 0, z: 10, halfWidth: 4 }
+    { x: 0, y: 0, z: 10, halfWidth: 4 },
   ],
   surfaces: {
-    road:     { innerOffset: 0, outerOffset: 0 },
-    curb:     { innerOffset: 0, outerOffset: 0.4 },
+    road: { innerOffset: 0, outerOffset: 0 },
+    curb: { innerOffset: 0, outerOffset: 0.4 },
     sidewalk: { innerOffset: 0.4, outerOffset: 2 },
-    verge:    { innerOffset: 2, outerOffset: 6 }
+    verge: { innerOffset: 2, outerOffset: 6 },
   },
   props: [],
   pickups: [{ progress: 0.25, sideOffset: 0 }],
@@ -26,8 +26,8 @@ const VALID_TRACK = {
     sunDirection: [0.4, 0.8, 0.2],
     hemisphereSky: "#a8c4e0",
     hemisphereGround: "#504030",
-    fogDensity: 0.003
-  }
+    fogDensity: 0.003,
+  },
 };
 
 describe("TrackSchema", () => {
@@ -45,5 +45,41 @@ describe("TrackSchema", () => {
   it("rejects a track with progress values outside [0, 1]", () => {
     const bad = { ...VALID_TRACK, pickups: [{ progress: 1.5, sideOffset: 0 }] };
     expect(() => TrackSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects a spline point with halfWidth <= 0", () => {
+    const bad = {
+      ...VALID_TRACK,
+      spline: [
+        { x: 0, y: 0, z: 0, halfWidth: 0 },
+        { x: 10, y: 0, z: 0, halfWidth: 4 },
+        { x: 10, y: 0, z: 10, halfWidth: 4 },
+        { x: 0, y: 0, z: 10, halfWidth: 4 },
+      ],
+    };
+    expect(() => TrackSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects invalid hex colors in lighting", () => {
+    const bad = {
+      ...VALID_TRACK,
+      lighting: { ...VALID_TRACK.lighting, hemisphereSky: "not-a-hex" },
+    };
+    expect(() => TrackSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects fewer than 2 checkpoints", () => {
+    const bad = { ...VALID_TRACK, checkpoints: [0.5] };
+    expect(() => TrackSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects empty id strings", () => {
+    const bad = { ...VALID_TRACK, id: "" };
+    expect(() => TrackSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects when required lighting block is missing", () => {
+    const { lighting: _lighting, ...rest } = VALID_TRACK;
+    expect(() => TrackSchema.parse(rest)).toThrow();
   });
 });
