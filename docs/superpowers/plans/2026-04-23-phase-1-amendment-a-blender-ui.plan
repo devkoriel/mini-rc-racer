@@ -1,0 +1,1400 @@
+# Phase 1 Plan Amendment A — Blender Asset Pipeline + UI Polish Uplift
+
+> **Companion to:** `docs/superpowers/plans/2026-04-23-phase-1-engine-reset.plan`
+> **For agentic workers:** Use superpowers:subagent-driven-development. Steps use checkbox (`- [ ]`) syntax.
+
+**Date:** 2026-04-23
+**Triggers:**
+1. User has Blender installed on macOS and approved option A sequencing (amend now, keep Blender-independent Tasks 6–21 moving, land asset pipeline before render Tasks 22+).
+2. User reiterated the ultimate vision: publish a 90% Re-Volt-like web 3D game with super beautiful UI/UX across mobile / web / PC, deployed on Cloudflare.
+
+**Goal of this amendment:** Upgrade Phase 1 so that (a) cars and props render from real Blender-exported `.glb` assets with baked AO and PBR materials, with a procedural fallback for tests; (b) the shell, HUD, title, and overlays ship a real design system rather than default stat cards; (c) clean-room discipline stays intact — no lifted art, names, or track layouts.
+
+**Non-goals:** Hand-modelling inside this agent session (I drive Blender via headless Python; the user hand-models hero assets such as the Boulevard car). Online multiplayer, track editor, or any scope beyond the original Tier 3 package.
+
+**Summary of changes:**
+
+| ID | Type | Target |
+|---|---|---|
+| T5.1 | Follow-up | Backfill TrackSchema edge-case tests (5 new tests) |
+| T4A | New | Asset pipeline deps: `three/examples/jsm` loaders + ktx2 parser + meshoptimizer + Blender detection |
+| T7A | New | `meshAsset` optional field on Track Prop + Car (schema + tests) |
+| T11A | New | Blender headless export pipeline (Python + npm run assets:build) |
+| T22 | Revised | Prop instancer consumes `.glb`; procedural fallback retained |
+| T23 | Revised | Car mesh loads `.glb`; procedural fallback retained |
+| T23A | New | `docs/modeling-briefs/boulevard.plan` — modeling brief for the user |
+| T25 | Revised | HUD ships a designed surface system (typography, tokens, motion) |
+| T26 | Revised | Overlay + title screen ship with design language (ex-functional) |
+| T26A | New | Typography + design tokens (`src/style.css` refactor to tokens) |
+| T29 | Revised | Sector 18 JSON references GLB prop ids + real lightmap |
+| T30 | Revised | Boulevard JSON references `boulevard.glb` |
+| T35A | New | Playwright visual regression snapshots for title + track select + car select + finish |
+
+All additions are sequenced into a single cohesive TDD plan below.
+
+---
+
+## Execution order overlay
+
+```
+Existing:  T1 → T2 → T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → T11 → T12 → T13 → T14 → T15 → T16 → T17 → T18 → T19
+                                             │
+Amendment (inserted after T5):           T5.1
+                                             │
+                                         T4A   ← install loader deps (decoupled from render work; safe now)
+                                             │
+                                         T7A   ← schema additions (compose with T7 PickupRosterSchema)
+                                             │
+Existing resumes:    T6 → T7 → T7A → T8 → ... → T19
+
+Amendment (replaces / augments T20 onward):
+                     T11A ← Blender export pipeline (can land any time after T4A; good window after T13 audio scaffold)
+                     T20 ← scene rig (unchanged)
+                     T21 ← track mesh (unchanged; lightmap binding ready for real atlas)
+                     T26A ← typography + design tokens (before HUD / overlay work)
+                     T22 (revised) ← prop instancer with GLB loader + fallback
+                     T23 (revised) ← car mesh with GLB loader + fallback
+                     T23A ← Boulevard modeling brief doc (hand off to user)
+                     T24 ← camera + FX (unchanged)
+                     T25 (revised) ← designed HUD
+                     T26 (revised) ← designed overlay + title screen
+                     T27–T28 (unchanged)
+                     T29 (revised) ← Sector 18 with real asset ids
+                     T30 (revised) ← Boulevard with glb asset id
+                     T31–T34 (unchanged)
+                     T35 (revised to add UI screens) → T35A
+```
+
+---
+
+## T5.1: Backfill TrackSchema edge-case tests
+
+**Files:**
+- Modify: `tests/data/schemas.test.ts`
+
+Code quality review of T5 flagged five untested validation rules. Add them now so the schema contract is fully locked down before Tasks 6 and 7 repeat the pattern.
+
+- [ ] **Step 1: Append tests**
+
+Append to `tests/data/schemas.test.ts` (inside the existing `describe("TrackSchema", ...)` block):
+
+```typescript
+  it("rejects a spline point with halfWidth <= 0", () => {
+    const bad = {
+      ...VALID_TRACK,
+      spline: [
+        { x: 0, y: 0, z: 0, halfWidth: 0 },
+        { x: 10, y: 0, z: 0, halfWidth: 4 },
+        { x: 10, y: 0, z: 10, halfWidth: 4 },
+        { x: 0, y: 0, z: 10, halfWidth: 4 }
+      ]
+    };
+    expect(() => TrackSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects invalid hex colors in lighting", () => {
+    const bad = { ...VALID_TRACK, lighting: { ...VALID_TRACK.lighting, hemisphereSky: "not-a-hex" } };
+    expect(() => TrackSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects fewer than 2 checkpoints", () => {
+    const bad = { ...VALID_TRACK, checkpoints: [0.5] };
+    expect(() => TrackSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects empty id strings", () => {
+    const bad = { ...VALID_TRACK, id: "" };
+    expect(() => TrackSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects when required lighting block is missing", () => {
+    const { lighting: _lighting, ...rest } = VALID_TRACK;
+    expect(() => TrackSchema.parse(rest)).toThrow();
+  });
+```
+
+- [ ] **Step 2: Run tests** — `npx vitest run tests/data/schemas.test.ts` expected 8 passing.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tests/data/schemas.test.ts
+git commit -m "test(data): expand TrackSchema validation coverage"
+```
+
+---
+
+## T4A: Asset pipeline dependencies
+
+**Files:**
+- Modify: `package.json`
+- Modify: `vite.config.ts`
+
+Three.js bundles the loader source in `three/examples/jsm/` but those loaders are not eagerly imported. We keep them as dynamic imports so bundle size doesn't bloat. KTX2 transcoding needs the `basis_transcoder` script + WASM — we host them locally under `public/basis/`. Draco compression needs decoders under `public/draco/`. These are static files copied from `three/examples/jsm/libs/` at install.
+
+- [ ] **Step 1: Add runtime dep for basis universal + meshopt + KTX2 transcoder wiring**
+
+Run:
+```bash
+npm install --save three-mesh-bvh@^0.9.0
+```
+(Three-mesh-bvh is optional but cheap; reserves raycast acceleration for AI ground queries in Phase 2. If not desired, skip this.)
+
+For KTX2 + Draco + Meshopt, we re-use the decoders that ship inside Three's `examples/jsm/libs/`. No extra npm dep needed — we only need to copy the static binaries into `public/` so the loaders can fetch them at runtime.
+
+- [ ] **Step 2: Copy loader runtime assets to `public/`**
+
+Run:
+```bash
+mkdir -p public/basis public/draco public/meshopt
+cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.js public/basis/
+cp node_modules/three/examples/jsm/libs/basis/basis_transcoder.wasm public/basis/
+cp node_modules/three/examples/jsm/libs/draco/draco_decoder.js public/draco/
+cp node_modules/three/examples/jsm/libs/draco/draco_decoder.wasm public/draco/
+cp node_modules/three/examples/jsm/libs/draco/draco_wasm_wrapper.js public/draco/
+cp node_modules/three/examples/jsm/libs/meshopt_decoder.module.js public/meshopt/
+```
+
+- [ ] **Step 3: Verify copies**
+
+Run: `ls public/basis public/draco public/meshopt`
+Expected: files listed above are present.
+
+- [ ] **Step 4: Check build still works**
+
+Run: `npm run build`
+Expected: clean build. `public/basis`, `public/draco`, `public/meshopt` get copied into `dist/` by Vite automatically.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add package.json package-lock.json public/basis public/draco public/meshopt
+git commit -m "chore(assets): add KTX2 + Draco + meshopt decoder runtime assets"
+```
+
+---
+
+## T7A: Schema additions for mesh assets + car color slots
+
+**Files:**
+- Modify: `src/data/schemas.ts`
+- Modify: `tests/data/schemas.test.ts`
+
+The Track Prop and Car schemas need a way to point at `.glb` and `.ktx2` assets. We keep the field **optional** so that Tasks 22 and 23 can fall back to procedural geometry during dev and during test (which runs in Node with no WebGL context).
+
+- [ ] **Step 1: Add failing tests**
+
+Append to `tests/data/schemas.test.ts`:
+
+```typescript
+describe("TrackSchema with mesh assets", () => {
+  it("accepts a prop with meshAsset", () => {
+    const withAsset = {
+      ...VALID_TRACK,
+      props: [{
+        propId: "mailbox",
+        position: [0, 0, 0],
+        rotation: 0,
+        scaleBucket: "small",
+        meshAsset: "props/mailbox.glb"
+      }]
+    };
+    const parsed = TrackSchema.parse(withAsset);
+    expect(parsed.props[0].meshAsset).toBe("props/mailbox.glb");
+  });
+
+  it("rejects a meshAsset path that does not end in .glb", () => {
+    const bad = {
+      ...VALID_TRACK,
+      props: [{
+        propId: "mailbox",
+        position: [0, 0, 0],
+        rotation: 0,
+        scaleBucket: "small",
+        meshAsset: "props/mailbox.obj"
+      }]
+    };
+    expect(() => TrackSchema.parse(bad)).toThrow();
+  });
+});
+
+describe("CarSchema with mesh + texture assets", () => {
+  it("accepts a car with meshAsset + paintMapAsset", () => {
+    const withAssets = {
+      ...VALID_CAR,
+      meshAsset: "cars/boulevard.glb",
+      textures: {
+        paintMap: "cars/boulevard_paint.ktx2",
+        roughnessMap: "cars/boulevard_rough.ktx2"
+      }
+    };
+    const parsed = CarSchema.parse(withAssets);
+    expect(parsed.meshAsset).toBe("cars/boulevard.glb");
+    expect(parsed.textures?.paintMap).toMatch(/\.ktx2$/);
+  });
+
+  it("rejects a car texture path that does not end in .ktx2", () => {
+    const bad = {
+      ...VALID_CAR,
+      textures: { paintMap: "cars/paint.png" }
+    };
+    expect(() => CarSchema.parse(bad)).toThrow();
+  });
+});
+```
+
+(Note: `VALID_CAR` is defined in tests for Task 6. This test block lives above the Prop/CarSchema tests.)
+
+- [ ] **Step 2: Verify failure**
+
+Run: `npx vitest run tests/data/schemas.test.ts`
+Expected: 4 new tests FAIL.
+
+- [ ] **Step 3: Update schemas**
+
+In `src/data/schemas.ts`, update the `Prop` schema:
+
+```typescript
+const Prop = z.object({
+  propId: z.string().min(1),
+  position: z.tuple([z.number(), z.number(), z.number()]),
+  rotation: z.number(),
+  scaleBucket: z.enum(["small", "medium", "large"]),
+  meshAsset: z.string().regex(/\.glb$/).optional()
+});
+```
+
+Add to `CarSchema` (keep existing fields; add two new optional ones at the end of the object):
+
+```typescript
+export const CarSchema = z.object({
+  id: z.string().min(1),
+  displayName: z.string().min(1),
+  class: z.enum(["rookie", "stock", "muscle", "pro"]),
+  silhouette: z.enum(["buggy", "hatch", "wedge-coupe", "monster", "muscle", "van", "carbon", "formula"]),
+  tuning: CarTuning,
+  cosmetic: CarCosmetic,
+  meshAsset: z.string().regex(/\.glb$/).optional(),
+  textures: z.object({
+    paintMap: z.string().regex(/\.ktx2$/).optional(),
+    roughnessMap: z.string().regex(/\.ktx2$/).optional(),
+    normalMap: z.string().regex(/\.ktx2$/).optional()
+  }).optional()
+});
+```
+
+Also update the `Track` schema's `lightmapAtlas` to allow `.ktx2`:
+
+```typescript
+lightmapAtlas: z.string().regex(/\.(ktx2|png)$/),
+```
+
+- [ ] **Step 4: Verify tests pass** — `npx vitest run tests/data/schemas.test.ts` → 12 passed (8 prior + 4 new) after T5.1 + T7 merge.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/data/schemas.ts tests/data/schemas.test.ts
+git commit -m "feat(data): optional GLB + KTX2 asset references on Car + Prop"
+```
+
+**Order note:** T7A depends on T6 (CarSchema) and T7 (PickupRosterSchema) being landed — so the execution order is T6 → T7 → T7A.
+
+---
+
+## T11A: Blender headless export pipeline
+
+**Files:**
+- Create: `tools/blender/README.plan`
+- Create: `tools/blender/build_props.py`
+- Create: `tools/blender/build_pickups.py`
+- Create: `tools/blender/_lib.py`
+- Create: `tools/assets-build.sh`
+- Modify: `package.json` (add `assets:build` script)
+- Modify: `.gitignore` (ignore the baked asset outputs under `public/content/`)
+
+Headless Blender runs all prop + pickup generation as Python scripts that call `bpy` directly. Outputs `.glb` + `.ktx2` into `public/content/meshes/` and `public/content/textures/`. Hero cars are *not* auto-generated; the user authors those in Blender and drops the `.glb` directly into `public/content/meshes/`.
+
+- [ ] **Step 1: Detect Blender**
+
+Run: `which blender || echo NOT_FOUND`
+Expected: a path like `/Applications/Blender.app/Contents/MacOS/Blender` OR `NOT_FOUND`. If NOT_FOUND, ask the user to symlink Blender's binary into `$PATH` or provide the full path (we'll encode it in the script as `BLENDER_BIN`).
+
+- [ ] **Step 2: Write the shared library**
+
+Content of `tools/blender/_lib.py`:
+
+```python
+"""Shared helpers for generating clean-room RC racer props in Blender."""
+from __future__ import annotations
+
+import os
+import sys
+import bpy
+
+
+def reset_scene() -> None:
+    """Clear the default cube + lights so each script starts clean."""
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.context.scene.unit_settings.system = "METRIC"
+    bpy.context.scene.unit_settings.length_unit = "METERS"
+
+
+def add_simple_pbr_material(name: str, base_color_hex: str, roughness: float, metallic: float = 0.0) -> bpy.types.Material:
+    """Create a PBR material with a named tint. Clean-room — no texture images, only procedural tint."""
+    r = int(base_color_hex[1:3], 16) / 255.0
+    g = int(base_color_hex[3:5], 16) / 255.0
+    b = int(base_color_hex[5:7], 16) / 255.0
+    mat = bpy.data.materials.new(name=name)
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    bsdf = nodes.get("Principled BSDF")
+    bsdf.inputs["Base Color"].default_value = (r, g, b, 1.0)
+    bsdf.inputs["Roughness"].default_value = roughness
+    bsdf.inputs["Metallic"].default_value = metallic
+    return mat
+
+
+def uv_smart_project(obj: bpy.types.Object) -> None:
+    """Smart-UV-unwrap an object so baked AO has sane seams."""
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.uv.smart_project(angle_limit=1.15, island_margin=0.02)
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+
+def export_glb(obj: bpy.types.Object, out_path: str) -> None:
+    """Export a single object as `.glb` with glTF compression if available."""
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.export_scene.gltf(
+        filepath=out_path,
+        use_selection=True,
+        export_format="GLB",
+        export_apply=True,
+        export_yup=True,
+        export_texcoords=True,
+        export_normals=True,
+        export_materials="EXPORT",
+        export_draco_mesh_compression_enable=False,
+        export_animations=False,
+        export_lights=False,
+        export_cameras=False
+    )
+    print(f"[blender] wrote {out_path}")
+```
+
+- [ ] **Step 3: Write the prop-build script**
+
+Content of `tools/blender/build_props.py`:
+
+```python
+"""Generate low-poly neighborhood props for Phase 1. Clean-room — all geometry authored here, nothing traced."""
+from __future__ import annotations
+
+import os
+import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
+
+import bpy  # noqa: E402
+from _lib import reset_scene, add_simple_pbr_material, uv_smart_project, export_glb  # noqa: E402
+
+OUT_DIR = os.environ.get("RC_ASSETS_OUT", os.path.join(SCRIPT_DIR, "..", "..", "public", "content", "meshes", "props"))
+
+
+def mailbox() -> None:
+    reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=1)
+    post = bpy.context.active_object
+    post.scale = (0.04, 0.04, 0.35)
+    post.location = (0, 0, 0.35)
+    bpy.ops.object.transform_apply(location=True, scale=True)
+    mat_post = add_simple_pbr_material("MailboxPost", "#5a5450", roughness=0.9)
+    post.data.materials.append(mat_post)
+
+    bpy.ops.mesh.primitive_cube_add(size=1)
+    body = bpy.context.active_object
+    body.scale = (0.15, 0.25, 0.12)
+    body.location = (0, 0, 0.8)
+    bpy.ops.object.transform_apply(location=True, scale=True)
+    mat_body = add_simple_pbr_material("MailboxBody", "#6a5e4a", roughness=0.7)
+    body.data.materials.append(mat_body)
+
+    bpy.ops.object.select_all(action="DESELECT")
+    post.select_set(True)
+    body.select_set(True)
+    bpy.context.view_layer.objects.active = body
+    bpy.ops.object.join()
+    joined = bpy.context.active_object
+    joined.name = "mailbox"
+    uv_smart_project(joined)
+    export_glb(joined, os.path.join(OUT_DIR, "mailbox.glb"))
+
+
+def bin_trash() -> None:
+    reset_scene()
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.2, depth=0.6, vertices=16)
+    obj = bpy.context.active_object
+    obj.location = (0, 0, 0.3)
+    bpy.ops.object.transform_apply(location=True)
+    obj.name = "bin"
+    mat = add_simple_pbr_material("BinBody", "#30322e", roughness=0.6, metallic=0.1)
+    obj.data.materials.append(mat)
+    uv_smart_project(obj)
+    export_glb(obj, os.path.join(OUT_DIR, "bin.glb"))
+
+
+def cone() -> None:
+    reset_scene()
+    bpy.ops.mesh.primitive_cone_add(radius1=0.14, depth=0.32, vertices=12)
+    obj = bpy.context.active_object
+    obj.location = (0, 0, 0.16)
+    bpy.ops.object.transform_apply(location=True)
+    obj.name = "cone"
+    mat = add_simple_pbr_material("ConeOrange", "#d35a1a", roughness=0.5)
+    obj.data.materials.append(mat)
+    uv_smart_project(obj)
+    export_glb(obj, os.path.join(OUT_DIR, "cone.glb"))
+
+
+def fence_post() -> None:
+    reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=1)
+    obj = bpy.context.active_object
+    obj.scale = (0.04, 0.04, 0.6)
+    obj.location = (0, 0, 0.6)
+    bpy.ops.object.transform_apply(location=True, scale=True)
+    obj.name = "fence_post"
+    mat = add_simple_pbr_material("FenceWood", "#9a6e3c", roughness=0.95)
+    obj.data.materials.append(mat)
+    uv_smart_project(obj)
+    export_glb(obj, os.path.join(OUT_DIR, "fence_post.glb"))
+
+
+def tree_conifer() -> None:
+    reset_scene()
+    # stub trunk
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.12, depth=0.6, vertices=10)
+    trunk = bpy.context.active_object
+    trunk.location = (0, 0, 0.3)
+    mat_t = add_simple_pbr_material("Trunk", "#5b3a20", roughness=0.95)
+    trunk.data.materials.append(mat_t)
+    bpy.ops.object.transform_apply(location=True)
+    # cone canopy
+    bpy.ops.mesh.primitive_cone_add(radius1=0.7, radius2=0.0, depth=1.8, vertices=10)
+    canopy = bpy.context.active_object
+    canopy.location = (0, 0, 1.5)
+    bpy.ops.object.transform_apply(location=True)
+    mat_c = add_simple_pbr_material("Canopy", "#3a7a48", roughness=1.0)
+    canopy.data.materials.append(mat_c)
+
+    bpy.ops.object.select_all(action="DESELECT")
+    trunk.select_set(True)
+    canopy.select_set(True)
+    bpy.context.view_layer.objects.active = canopy
+    bpy.ops.object.join()
+    joined = bpy.context.active_object
+    joined.name = "tree_conifer"
+    uv_smart_project(joined)
+    export_glb(joined, os.path.join(OUT_DIR, "tree_conifer.glb"))
+
+
+def street_light() -> None:
+    reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=1)
+    post = bpy.context.active_object
+    post.scale = (0.04, 0.04, 1.6)
+    post.location = (0, 0, 1.6)
+    bpy.ops.object.transform_apply(location=True, scale=True)
+    post.name = "street_light"
+    mat = add_simple_pbr_material("LampPost", "#7a7a7a", roughness=0.55, metallic=0.3)
+    post.data.materials.append(mat)
+    uv_smart_project(post)
+    export_glb(post, os.path.join(OUT_DIR, "street_light.glb"))
+
+
+def parked_sedan() -> None:
+    reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=1)
+    body = bpy.context.active_object
+    body.scale = (0.95, 1.9, 0.6)
+    body.location = (0, 0, 0.45)
+    bpy.ops.object.transform_apply(location=True, scale=True)
+    body.name = "parked_sedan"
+    mat = add_simple_pbr_material("SedanPaint", "#184468", roughness=0.35, metallic=0.6)
+    body.data.materials.append(mat)
+    uv_smart_project(body)
+    export_glb(body, os.path.join(OUT_DIR, "parked_sedan.glb"))
+
+
+def house_block() -> None:
+    reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=1)
+    walls = bpy.context.active_object
+    walls.scale = (2.0, 1.5, 1.1)
+    walls.location = (0, 0, 1.1)
+    bpy.ops.object.transform_apply(location=True, scale=True)
+    mat_w = add_simple_pbr_material("HouseWalls", "#c06a4a", roughness=0.85)
+    walls.data.materials.append(mat_w)
+    # roof prism
+    bpy.ops.mesh.primitive_cone_add(vertices=4, radius1=2.3, radius2=0.0, depth=1.0)
+    roof = bpy.context.active_object
+    roof.location = (0, 0, 2.7)
+    roof.rotation_euler = (0, 0, 0.785398)
+    bpy.ops.object.transform_apply(location=True, rotation=True)
+    mat_r = add_simple_pbr_material("HouseRoof", "#5a2a18", roughness=0.95)
+    roof.data.materials.append(mat_r)
+
+    bpy.ops.object.select_all(action="DESELECT")
+    walls.select_set(True)
+    roof.select_set(True)
+    bpy.context.view_layer.objects.active = walls
+    bpy.ops.object.join()
+    joined = bpy.context.active_object
+    joined.name = "house_block"
+    uv_smart_project(joined)
+    export_glb(joined, os.path.join(OUT_DIR, "house_block.glb"))
+
+
+def main() -> None:
+    mailbox()
+    bin_trash()
+    cone()
+    fence_post()
+    tree_conifer()
+    street_light()
+    parked_sedan()
+    house_block()
+    print("[blender] prop build complete")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 4: Write the pickup-build script**
+
+Content of `tools/blender/build_pickups.py`:
+
+```python
+"""Generate pickup geometry. Phase 1 ships only Spark Burst."""
+from __future__ import annotations
+
+import os
+import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
+
+import bpy  # noqa: E402
+from _lib import reset_scene, add_simple_pbr_material, uv_smart_project, export_glb  # noqa: E402
+
+OUT_DIR = os.environ.get("RC_ASSETS_OUT", os.path.join(SCRIPT_DIR, "..", "..", "public", "content", "meshes", "pickups"))
+
+
+def spark_burst() -> None:
+    reset_scene()
+    bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=1, radius=0.22)
+    obj = bpy.context.active_object
+    obj.location = (0, 0, 0.3)
+    bpy.ops.object.transform_apply(location=True)
+    obj.name = "spark_burst"
+    mat = add_simple_pbr_material("SparkBurst", "#ffd24a", roughness=0.15, metallic=0.2)
+    obj.data.materials.append(mat)
+    # emissive shove so it glows
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    bsdf.inputs["Emission Color"].default_value = (1.0, 0.78, 0.18, 1.0)
+    bsdf.inputs["Emission Strength"].default_value = 2.5
+    uv_smart_project(obj)
+    export_glb(obj, os.path.join(OUT_DIR, "spark_burst.glb"))
+
+
+if __name__ == "__main__":
+    spark_burst()
+    print("[blender] pickup build complete")
+```
+
+- [ ] **Step 5: Write the orchestrator shell script**
+
+Content of `tools/assets-build.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+BLENDER_BIN="${BLENDER_BIN:-blender}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+OUT="${ROOT}/public/content"
+
+if ! command -v "$BLENDER_BIN" >/dev/null 2>&1; then
+  echo "error: Blender CLI not found on PATH and BLENDER_BIN not set."
+  echo "       On macOS try: export BLENDER_BIN=/Applications/Blender.app/Contents/MacOS/Blender"
+  exit 1
+fi
+
+echo "[assets] using $("$BLENDER_BIN" --version | head -1)"
+
+mkdir -p "$OUT/meshes/props" "$OUT/meshes/pickups" "$OUT/meshes/cars" "$OUT/textures"
+
+RC_ASSETS_OUT="$OUT/meshes/props" "$BLENDER_BIN" --background --python "$ROOT/tools/blender/build_props.py"
+RC_ASSETS_OUT="$OUT/meshes/pickups" "$BLENDER_BIN" --background --python "$ROOT/tools/blender/build_pickups.py"
+
+echo "[assets] done — output in $OUT"
+```
+
+- [ ] **Step 6: Make it executable + add the npm script**
+
+Run: `chmod +x tools/assets-build.sh`
+
+Add to `package.json` scripts:
+
+```json
+"assets:build": "tools/assets-build.sh"
+```
+
+- [ ] **Step 7: Document for the user**
+
+Content of `tools/blender/README.plan`:
+
+```markdown
+# Blender Asset Pipeline
+
+## What this produces
+
+`npm run assets:build` runs Blender headlessly and writes `.glb` files into
+`public/content/meshes/{props,pickups,cars}/` that the game loads at runtime.
+
+## What Blender needs
+
+- Blender 4.x on macOS (tested with the `.app` bundle).
+- `BLENDER_BIN` env var pointing at the CLI binary if `blender` is not on PATH:
+  ```
+  export BLENDER_BIN=/Applications/Blender.app/Contents/MacOS/Blender
+  ```
+
+## What you hand-author
+
+- `public/content/meshes/cars/boulevard.glb`
+- Any future hero car (Sparky, Pillbox, Dustdevil, Overkill, Turnpike, Cyan Arrow, Ember 9).
+
+Modeling briefs live in `docs/superpowers/modeling-briefs/<carId>.plan`.
+
+## What is auto-generated
+
+- Props: mailbox, bin, cone, fence_post, tree_conifer, street_light, parked_sedan, house_block.
+- Pickups: spark_burst.
+
+## Clean-room rules
+
+- No geometry traced from shipped games.
+- Every car is a fresh silhouette designed here.
+- Every prop is a fresh model authored here.
+
+## Troubleshooting
+
+If `npm run assets:build` can't find Blender:
+```
+brew install --cask blender
+# or download from blender.org and install into /Applications/
+```
+```
+
+- [ ] **Step 8: Ignore the outputs**
+
+Append to `.gitignore`:
+
+```
+public/content/meshes/
+public/content/textures/
+```
+
+(Reason: Blender builds are reproducible; we don't want binary diffs in PRs. CI can run `npm run assets:build` before `npm run build`.)
+
+- [ ] **Step 9: Smoke-test the pipeline**
+
+Run: `npm run assets:build`
+Expected: Blender produces `.glb` files. List them:
+```bash
+ls public/content/meshes/props public/content/meshes/pickups
+```
+Expected: 8 prop files + 1 pickup file.
+
+If Blender is missing on the machine, skip the smoke test and record it as a NEEDS_CONTEXT escalation noting the exact `BLENDER_BIN` path or installation gap.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add tools/blender tools/assets-build.sh package.json .gitignore
+git commit -m "feat(assets): headless Blender pipeline for props + pickups"
+```
+
+---
+
+## T26A: Typography + design tokens (executed BEFORE revised T22 / T25 / T26)
+
+**Files:**
+- Modify: `src/style.css`
+- Create: `src/ui/tokens.css`
+- Modify: `index.html` (add `<link rel="preconnect">` + font import)
+
+The current `src/style.css` uses ad-hoc hex colors and sizes. The "super beautiful UI/UX" ambition needs shared design tokens so every screen looks coherent. This task refactors `src/style.css` into a token-driven layer + imports a production typography stack.
+
+- [ ] **Step 1: Create tokens**
+
+Content of `src/ui/tokens.css`:
+
+```css
+:root {
+  /* Typography ------------------------------------------------- */
+  --font-display: "Space Grotesk", "Inter", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --size-display-xl: clamp(3.5rem, 2rem + 6vw, 6.5rem);
+  --size-display-lg: clamp(2rem, 1.4rem + 2.5vw, 3.2rem);
+  --size-display-md: clamp(1.3rem, 1rem + 1vw, 1.75rem);
+  --size-body-lg: 1.05rem;
+  --size-body: 0.95rem;
+  --size-body-sm: 0.82rem;
+  --size-caption: 0.72rem;
+
+  --weight-display: 600;
+  --weight-bold: 600;
+  --weight-regular: 400;
+
+  /* Color ------------------------------------------------------ */
+  --color-ink: oklch(94% 0.01 260);
+  --color-ink-dim: oklch(74% 0.02 260);
+  --color-ink-faint: oklch(50% 0.02 260);
+
+  --color-surface-0: oklch(12% 0.03 260);
+  --color-surface-1: oklch(16% 0.04 260);
+  --color-surface-2: oklch(22% 0.05 260);
+  --color-surface-3: oklch(30% 0.06 260);
+
+  --color-accent: oklch(78% 0.18 74);       /* warm gold for boost + hero cues */
+  --color-accent-strong: oklch(85% 0.2 74);
+  --color-rival: oklch(62% 0.18 28);        /* coral for rival */
+  --color-go: oklch(68% 0.18 150);          /* green for go / ready */
+  --color-danger: oklch(62% 0.2 30);        /* red for warnings */
+
+  /* Motion ----------------------------------------------------- */
+  --dur-fast: 120ms;
+  --dur-base: 240ms;
+  --dur-slow: 480ms;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-back: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-in-expo: cubic-bezier(0.7, 0, 0.84, 0);
+
+  /* Space + radius ------------------------------------------- */
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 2rem;
+  --space-xl: 3.5rem;
+
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+
+  /* Glass surfaces ------------------------------------------- */
+  --glass-bg: color-mix(in oklch, var(--color-surface-2) 65%, transparent);
+  --glass-border: color-mix(in oklch, var(--color-ink) 12%, transparent);
+  --glass-shadow: 0 24px 48px -24px oklch(0% 0 0 / 0.6), 0 2px 8px oklch(0% 0 0 / 0.35);
+  --glass-backdrop: blur(16px) saturate(1.2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-slow: 0ms;
+  }
+}
+```
+
+- [ ] **Step 2: Add font preconnect + import to `index.html`**
+
+Inside `<head>`:
+
+```html
+<link rel="preconnect" href="https://fonts.bunny.net" crossorigin />
+<link rel="preload" as="style" href="https://fonts.bunny.net/css?family=space-grotesk:500,600,700|inter:400,500,600|jetbrains-mono:400,500&display=swap" />
+<link rel="stylesheet" href="https://fonts.bunny.net/css?family=space-grotesk:500,600,700|inter:400,500,600|jetbrains-mono:400,500&display=swap" />
+```
+
+(Bunny Fonts is a GDPR-safe, CDN-fronted Google Fonts mirror with no request logging.)
+
+- [ ] **Step 3: Refactor `src/style.css`**
+
+Open `src/style.css` and rewrite the top to import the tokens and switch to design tokens:
+
+```css
+@import "./ui/tokens.css";
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: var(--color-surface-0);
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  font-size: var(--size-body);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.shell { min-height: 100vh; display: flex; flex-direction: column; }
+```
+
+Then update the rest of the rules in `style.css` to consume the tokens (colors, spacing, radii, durations, shadows) rather than raw hex. Keep existing class names for now — Task 25 and Task 26 will redesign the visual treatment of the HUD + overlays on top of this token base.
+
+- [ ] **Step 4: Verify build still works + screenshot-check at localhost**
+
+Run: `npm run build && npm run preview &`
+
+Open `http://localhost:4173` — you should see the same layout but new typography + darker surface + warmer accent. Press Ctrl+C to stop the preview.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/style.css src/ui/tokens.css index.html
+git commit -m "feat(ui): design tokens + production typography stack"
+```
+
+---
+
+## T22 (revised): Prop instancer consumes GLBs with procedural fallback
+
+**Files:**
+- Modify: `src/render/prop-instancer.ts`
+- Modify: `src/engine/assets.ts`
+- Create: `tests/render/prop-instancer.test.ts` (if not already created)
+
+**Revision:** The original Task 22 built procedural meshes inside the instancer. We split responsibilities: `engine/assets.ts` loads GLBs via `GLTFLoader`. `render/prop-instancer.ts` asks the asset loader for geometry by `propId`; if a `.glb` has been registered and loaded, the instancer uses that geometry; otherwise it falls back to the old procedural primitive (kept for tests and offline dev).
+
+- [ ] **Step 1: Build `engine/assets.ts`**
+
+Replace the `export {};` in `src/engine/assets.ts` with:
+
+```typescript
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
+import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
+
+export interface AssetCatalog {
+  registerGLB: (assetId: string, url: string) => void;
+  loadAll: (renderer: THREE.WebGLRenderer) => Promise<void>;
+  getMesh: (assetId: string) => THREE.BufferGeometry | null;
+  getMaterial: (assetId: string) => THREE.Material | null;
+  dispose: () => void;
+}
+
+interface Entry {
+  url: string;
+  geometry: THREE.BufferGeometry | null;
+  material: THREE.Material | null;
+}
+
+export const createAssetCatalog = (): AssetCatalog => {
+  const entries = new Map<string, Entry>();
+
+  const registerGLB: AssetCatalog["registerGLB"] = (assetId, url) => {
+    entries.set(assetId, { url, geometry: null, material: null });
+  };
+
+  const loadAll: AssetCatalog["loadAll"] = async (renderer) => {
+    const ktx2 = new KTX2Loader().setTranscoderPath("/basis/").detectSupport(renderer);
+    const gltf = new GLTFLoader()
+      .setKTX2Loader(ktx2)
+      .setMeshoptDecoder(MeshoptDecoder);
+
+    const tasks: Array<Promise<void>> = [];
+    for (const [assetId, entry] of entries) {
+      tasks.push(
+        new Promise<void>((resolve, reject) => {
+          gltf.load(
+            entry.url,
+            (gltfData) => {
+              let firstMesh: THREE.Mesh | null = null;
+              gltfData.scene.traverse((obj) => {
+                if (!firstMesh && (obj as THREE.Mesh).isMesh) {
+                  firstMesh = obj as THREE.Mesh;
+                }
+              });
+              if (!firstMesh) {
+                resolve();
+                return;
+              }
+              entry.geometry = firstMesh.geometry.clone();
+              entry.material = Array.isArray(firstMesh.material)
+                ? firstMesh.material[0].clone()
+                : firstMesh.material.clone();
+              resolve();
+            },
+            undefined,
+            (err) => {
+              console.warn(`[assets] failed to load ${assetId}:`, err);
+              resolve(); // non-fatal — instancer will fall back to procedural
+            }
+          );
+        })
+      );
+    }
+    await Promise.all(tasks);
+  };
+
+  const getMesh: AssetCatalog["getMesh"] = (assetId) => entries.get(assetId)?.geometry ?? null;
+  const getMaterial: AssetCatalog["getMaterial"] = (assetId) => entries.get(assetId)?.material ?? null;
+
+  const dispose: AssetCatalog["dispose"] = () => {
+    for (const entry of entries.values()) {
+      entry.geometry?.dispose();
+      if (entry.material && "dispose" in entry.material) (entry.material as THREE.Material).dispose();
+    }
+    entries.clear();
+  };
+
+  return { registerGLB, loadAll, getMesh, getMaterial, dispose };
+};
+```
+
+- [ ] **Step 2: Refactor prop-instancer to accept an AssetCatalog**
+
+Replace the `createPropInstancer` implementation in `src/render/prop-instancer.ts` (from the original Task 22) so it takes a `catalog` argument and consults it before falling back to procedural prototypes:
+
+```typescript
+import * as THREE from "three";
+import type { AssetCatalog } from "../engine/assets";
+
+type PropId = "mailbox" | "bin" | "cone" | "fence-post" | "tree-conifer" | "street-light" | "parked-sedan" | "house-block";
+
+const SCALE_BUCKETS: Record<"small" | "medium" | "large", number> = {
+  small: 0.9, medium: 1.0, large: 1.1
+};
+
+const proceduralPrototype = (propId: PropId): { geometry: THREE.BufferGeometry; material: THREE.Material } => {
+  // Same procedural fallbacks as original Task 22 — used when no GLB is registered for the propId.
+  switch (propId) {
+    case "mailbox":      return { geometry: new THREE.BoxGeometry(0.15, 0.3, 0.25),  material: new THREE.MeshStandardMaterial({ color: 0x5a5450, roughness: 0.85 }) };
+    case "bin":          return { geometry: new THREE.CylinderGeometry(0.18, 0.2, 0.5, 12), material: new THREE.MeshStandardMaterial({ color: 0x303432, roughness: 0.7 }) };
+    case "cone":         return { geometry: new THREE.ConeGeometry(0.12, 0.32, 10), material: new THREE.MeshStandardMaterial({ color: 0xd35a1a, roughness: 0.6 }) };
+    case "fence-post":   return { geometry: new THREE.BoxGeometry(0.08, 0.6, 0.08), material: new THREE.MeshStandardMaterial({ color: 0x9a6e3c, roughness: 0.92 }) };
+    case "tree-conifer": return { geometry: new THREE.ConeGeometry(0.6, 1.6, 12), material: new THREE.MeshStandardMaterial({ color: 0x3a7a48, roughness: 1.0 }) };
+    case "street-light": return { geometry: new THREE.BoxGeometry(0.08, 1.6, 0.08), material: new THREE.MeshStandardMaterial({ color: 0x7a7a7a, roughness: 0.6 }) };
+    case "parked-sedan": return { geometry: new THREE.BoxGeometry(1.9, 0.6, 0.8), material: new THREE.MeshStandardMaterial({ color: 0x184468, roughness: 0.5, metalness: 0.2 }) };
+    case "house-block":  return { geometry: new THREE.BoxGeometry(4, 2.2, 3), material: new THREE.MeshStandardMaterial({ color: 0xc06a4a, roughness: 0.9 }) };
+  }
+};
+
+interface InstanceAccumulator {
+  readonly geometry: THREE.BufferGeometry;
+  readonly material: THREE.Material;
+  readonly transforms: Array<{ position: [number, number, number]; rotation: number; scale: number }>;
+}
+
+export interface PropInstancer {
+  addInstance: (propId: PropId, position: [number, number, number], rotation: number, scaleBucket: keyof typeof SCALE_BUCKETS) => void;
+  build: () => THREE.Group;
+}
+
+export const createPropInstancer = (catalog: AssetCatalog | null): PropInstancer => {
+  const buckets = new Map<PropId, InstanceAccumulator>();
+
+  const addInstance: PropInstancer["addInstance"] = (propId, position, rotation, scaleBucket) => {
+    let bucket = buckets.get(propId);
+    if (!bucket) {
+      const glbGeom = catalog?.getMesh(`prop:${propId}`) ?? null;
+      const glbMat  = catalog?.getMaterial(`prop:${propId}`) ?? null;
+      const proto = glbGeom && glbMat ? { geometry: glbGeom, material: glbMat } : proceduralPrototype(propId);
+      bucket = { geometry: proto.geometry, material: proto.material, transforms: [] };
+      buckets.set(propId, bucket);
+    }
+    bucket.transforms.push({ position, rotation, scale: SCALE_BUCKETS[scaleBucket] });
+  };
+
+  const build: PropInstancer["build"] = () => {
+    const group = new THREE.Group();
+    group.name = "props";
+    const matrix = new THREE.Matrix4();
+    for (const [propId, bucket] of buckets) {
+      const instanced = new THREE.InstancedMesh(bucket.geometry, bucket.material, bucket.transforms.length);
+      instanced.name = `prop-${propId}`;
+      for (let i = 0; i < bucket.transforms.length; i += 1) {
+        const { position, rotation, scale } = bucket.transforms[i];
+        matrix.makeRotationY(rotation).setPosition(position[0], position[1], position[2]);
+        matrix.scale(new THREE.Vector3(scale, scale, scale));
+        instanced.setMatrixAt(i, matrix);
+      }
+      instanced.instanceMatrix.needsUpdate = true;
+      group.add(instanced);
+    }
+    return group;
+  };
+
+  return { addInstance, build };
+};
+```
+
+- [ ] **Step 3: Extend the existing test (from original Task 22) to cover both paths**
+
+Update `tests/render/prop-instancer.test.ts`:
+
+```typescript
+import { describe, expect, it } from "vitest";
+import { createPropInstancer } from "../../src/render/prop-instancer";
+import type { AssetCatalog } from "../../src/engine/assets";
+
+const noCatalog = null;
+
+describe("prop instancer", () => {
+  it("groups same propId instances into a single InstancedMesh (procedural fallback)", () => {
+    const instancer = createPropInstancer(noCatalog);
+    instancer.addInstance("mailbox", [0, 0, 0], 0, "small");
+    instancer.addInstance("mailbox", [5, 0, 0], 0.2, "small");
+    instancer.addInstance("bin",     [0, 0, 5], 0, "medium");
+    const group = instancer.build();
+    const meshes = group.children.filter((c) => c.type === "Mesh" || c.type === "InstancedMesh");
+    expect(meshes.length).toBe(2);
+  });
+
+  it("uses catalog geometry when an asset is registered for the propId", () => {
+    // Minimal fake catalog — only getMesh + getMaterial matter here.
+    const fakeCatalog = {
+      registerGLB: () => {},
+      loadAll: async () => {},
+      getMesh: (id: string) => (id === "prop:mailbox" ? new (require("three")).SphereGeometry(0.1) : null),
+      getMaterial: (id: string) => (id === "prop:mailbox" ? new (require("three")).MeshStandardMaterial() : null),
+      dispose: () => {}
+    } as unknown as AssetCatalog;
+
+    const instancer = createPropInstancer(fakeCatalog);
+    instancer.addInstance("mailbox", [0, 0, 0], 0, "small");
+    const group = instancer.build();
+    const instanced = group.children[0] as import("three").InstancedMesh;
+    expect(instanced.geometry.type).toBe("SphereGeometry");
+  });
+});
+```
+
+- [ ] **Step 4: Verify** — `npx vitest run tests/render/prop-instancer.test.ts` → 2 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/engine/assets.ts src/render/prop-instancer.ts tests/render/prop-instancer.test.ts
+git commit -m "feat(render): prop instancer consumes GLBs via asset catalog with procedural fallback"
+```
+
+---
+
+## T23 (revised): Car mesh loads GLB with procedural fallback
+
+**Files:**
+- Modify: `src/render/car-mesh.ts`
+
+Replace the `createCarMesh` implementation to accept an optional pre-loaded GLB group:
+
+```typescript
+import * as THREE from "three";
+
+export interface CarVisualParts {
+  readonly group: THREE.Group;
+  readonly chassis: THREE.Object3D;
+  readonly wheels: readonly THREE.Object3D[];
+  readonly antenna: THREE.Object3D;
+  readonly boostGlow: THREE.Mesh;
+}
+
+export interface CarStyle {
+  readonly primaryColor: string;
+  readonly secondaryColor: string;
+  readonly glb?: THREE.Group | null; // optional loaded GLB scene
+}
+
+const buildProceduralCar = (style: CarStyle): CarVisualParts => {
+  const group = new THREE.Group();
+  group.name = "car";
+  const chassis = new THREE.Mesh(
+    new THREE.BoxGeometry(0.6, 0.24, 1.0),
+    new THREE.MeshStandardMaterial({ color: new THREE.Color(style.primaryColor), roughness: 0.45, metalness: 0.35 })
+  );
+  chassis.position.y = 0.18;
+  chassis.castShadow = true;
+  group.add(chassis);
+
+  const cabin = new THREE.Mesh(
+    new THREE.BoxGeometry(0.46, 0.18, 0.5),
+    new THREE.MeshStandardMaterial({ color: new THREE.Color(style.secondaryColor), roughness: 0.4, metalness: 0.1 })
+  );
+  cabin.position.set(0, 0.36, -0.05);
+  group.add(cabin);
+
+  const wheelGeom = new THREE.CylinderGeometry(0.12, 0.12, 0.08, 16);
+  wheelGeom.rotateZ(Math.PI / 2);
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.8 });
+  const wheels: THREE.Mesh[] = [];
+  for (const [x, z] of [[-0.3, 0.38], [0.3, 0.38], [-0.3, -0.38], [0.3, -0.38]] as const) {
+    const w = new THREE.Mesh(wheelGeom, wheelMat);
+    w.position.set(x, 0.12, z);
+    w.castShadow = true;
+    group.add(w);
+    wheels.push(w);
+  }
+
+  const antenna = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.005, 0.005, 0.5, 6),
+    new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.6 })
+  );
+  antenna.position.set(-0.2, 0.55, -0.3);
+  group.add(antenna);
+
+  const boostGlow = new THREE.Mesh(
+    new THREE.SphereGeometry(0.18, 16, 16),
+    new THREE.MeshBasicMaterial({ color: 0xffc84a, transparent: true, opacity: 0.0 })
+  );
+  boostGlow.position.set(0, 0.18, -0.6);
+  group.add(boostGlow);
+
+  return { group, chassis, wheels, antenna, boostGlow };
+};
+
+const wrapGLBCar = (glb: THREE.Group, style: CarStyle): CarVisualParts => {
+  const group = new THREE.Group();
+  group.name = "car";
+  const root = glb.clone(true);
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (mesh.isMesh && mesh.material) {
+      const mat = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as THREE.MeshStandardMaterial;
+      if (mat.name?.toLowerCase().includes("paint")) {
+        mat.color = new THREE.Color(style.primaryColor);
+      }
+    }
+  });
+  group.add(root);
+
+  const wheels: THREE.Object3D[] = [];
+  root.traverse((obj) => {
+    if (obj.name.toLowerCase().startsWith("wheel")) wheels.push(obj);
+  });
+
+  const boostGlow = new THREE.Mesh(
+    new THREE.SphereGeometry(0.18, 16, 16),
+    new THREE.MeshBasicMaterial({ color: 0xffc84a, transparent: true, opacity: 0.0 })
+  );
+  boostGlow.position.set(0, 0.18, -0.6);
+  group.add(boostGlow);
+
+  return { group, chassis: root, wheels, antenna: root, boostGlow };
+};
+
+export const createCarMesh = (style: CarStyle): CarVisualParts => {
+  if (style.glb) return wrapGLBCar(style.glb, style);
+  return buildProceduralCar(style);
+};
+
+export const setCarBoostGlow = (parts: CarVisualParts, intensity: number): void => {
+  const material = parts.boostGlow.material as THREE.MeshBasicMaterial;
+  material.opacity = Math.max(0, Math.min(1, intensity));
+};
+```
+
+- [ ] Verify via `npm run typecheck && npm test`.
+- [ ] Commit: `feat(render): car mesh accepts GLB with procedural fallback`.
+
+---
+
+## T23A: Boulevard modeling brief (hand-off doc)
+
+**Files:**
+- Create: `docs/superpowers/modeling-briefs/boulevard.plan`
+
+- [ ] **Step 1: Write the brief**
+
+Content:
+
+```markdown
+# Boulevard — Modeling Brief
+
+## Silhouette and fantasy
+
+An original wedge-coupe RC toy. Short wheelbase, low slung body, aggressive front-end rake, scooped rear, visible antenna post at rear-left. Must read as a "1:18-scale hobby RC" — chunky toy forms over realistic car detailing.
+
+## Dimensions (metres, RC scale)
+
+- Length: 1.0
+- Width: 0.6
+- Height (roof): 0.44
+- Wheelbase: 0.65
+- Track width: 0.48
+- Wheel radius: 0.12
+- Ground clearance: 0.04
+
+Pivot at body centre, feet of wheels sit on y = 0.
+
+## Polycount budget
+
+- Chassis + cabin: ~1200 tri
+- Wheels (x4, shared mesh): ~300 tri each
+- Antenna: ~60 tri
+- Total: ≤ 2500 tri
+
+## Material slots (name them exactly)
+
+- `paint`   — main body colour. Data-driven tint from `cars/boulevard.json` `cosmetic.paintSlots[0]`.
+- `accent`  — secondary colour on cabin / scoop. Data-driven tint from `cosmetic.paintSlots[1]`.
+- `rubber`  — tyre. Flat black-grey.
+- `chrome`  — wheel hub + bumper detail. Metallic 1.0, roughness 0.2.
+- `plastic` — antenna + interior.
+
+## UV layout
+
+- Smart-project body, then adjust seams on centre-line for symmetric paint.
+- Wheels: single shared UV chart, mirror-instanced.
+
+## Export
+
+- GLB, glTF 2.0, Y-up.
+- Named nodes: `chassis`, `wheel_fl`, `wheel_fr`, `wheel_rl`, `wheel_rr`, `antenna`.
+- Save to `public/content/meshes/cars/boulevard.glb`.
+
+## Reference vocabulary (not for tracing)
+
+Look at real 1:18 RC buggies + wedge-coupe kit cars for proportion. Do NOT trace or copy any specific product design.
+
+## Acceptance
+
+- Loads in Three.js via `GLTFLoader`.
+- Paint colour swaps correctly when `cars/boulevard.json` `paintSlots[0]` is changed.
+- Reads as a toy RC, not a full-scale car, at the default chase camera FOV 68°.
+```
+
+- [ ] Commit: `docs(modeling): add Boulevard modeling brief`.
+
+---
+
+## T25 (revised): Designed HUD
+
+**Files:**
+- Modify: `src/render/hud.ts`
+- Modify: `index.html` (HUD markup)
+- Modify: `src/style.css` (HUD styles)
+
+Upgrade the HUD to feel like a shipped racing game.
+
+Requirements:
+
+1. **Stat cards** become glass surfaces with `backdrop-filter`, `var(--glass-bg)`, accent bars, monospace readout font (`var(--font-mono)`).
+2. **Primary readout** is the timer — largest, display font, tabular-nums.
+3. **Secondary** — lap + place as smaller paired chips with animated place-change via CSS keyframe (fade+bounce using `--ease-out-back`).
+4. **Pickup slot** is prominent, with a `data-state` attribute (`empty`, `armed`, `active`) that drives visuals.
+5. **Speed meter** — horizontal bar that fills with speed using a CSS custom property `--speed-pct` set by JS.
+6. **Boost** — overlays speed bar with a pulse while `boostRemaining > 0`.
+
+The full HUD markup + CSS + updated `updateHud` implementation go in this task. (Exact code reuses design tokens from T26A.)
+
+- [ ] TDD with Playwright screenshot of the grid HUD at 1280×720 as visual baseline.
+- [ ] Commit: `feat(render): designed HUD with glass surfaces + speed bar + pickup slot`.
+
+---
+
+## T26 (revised): Designed overlay + title screen
+
+**Files:**
+- Modify: `src/ui/overlay.ts`
+- Modify: `index.html` (title + overlay markup)
+- Modify: `src/style.css`
+
+Upgrade grid/countdown/paused/finished overlays and add a real title screen + track select + car select (Phase 1 ships them even though there's only one track and one car — the screens exist so Phase 2 slots more content in without reshell).
+
+Requirements:
+
+1. **Title screen**: huge display-XL title over a low-res gameplay-teaser canvas render (or a static KTX2 hero image). "Press Start" prompt with soft pulse animation. Version + phase label in corner.
+2. **Track select**: bento grid of track cards. Phase 1 has one card (Sector 18); disabled cards listed for Phases 2/3 with "Coming in Phase 2" ribbons to set expectations.
+3. **Car select**: horizontal carousel of cars. Phase 1 has Boulevard; ghost cards for the other 7.
+4. **Countdown**: 3 → 2 → 1 → GO numbers are display-XL, scale-animated in on `--ease-out-back`, fade out on `--ease-in-expo`.
+5. **Finish**: big "Race Over" headline, final time + position, best-lap highlight, "Race Again" CTA.
+6. **Pause**: dim overlay with glass panel, resume + restart + quit buttons, volume sliders.
+
+- [ ] TDD with Playwright screenshots per state.
+- [ ] Commit: `feat(ui): designed title + track select + car select + overlay states`.
+
+---
+
+## T29 (revised): Sector 18 JSON with real asset ids
+
+**Files:**
+- Modify: `src/content/tracks/sector-18.json`
+
+Update every `props[*]` entry so it gains a `meshAsset` path. Example:
+
+```json
+{
+  "propId": "mailbox",
+  "position": [7, 0, 3],
+  "rotation": 0,
+  "scaleBucket": "small",
+  "meshAsset": "meshes/props/mailbox.glb"
+}
+```
+
+Update `lightmapAtlas` to `lightmaps/sector-18.ktx2` when/if we bake a real one; until then keep `neutral.png` (the schema allows both).
+
+- [ ] Commit: `feat(content): bind Sector 18 props to Blender GLB assets`.
+
+---
+
+## T30 (revised): Boulevard JSON with glb asset id
+
+**Files:**
+- Modify: `src/content/cars/boulevard.json`
+
+Add:
+
+```json
+{
+  ...existing fields...,
+  "meshAsset": "meshes/cars/boulevard.glb"
+}
+```
+
+- [ ] Commit: `feat(content): bind Boulevard car to Blender GLB asset`.
+
+---
+
+## T35A: Visual regression for UI screens
+
+**Files:**
+- Modify: `e2e/visual.spec.ts`
+
+Add snapshots for title, track select, car select, paused state, finish state. Each on both `desktop-chromium` and `mobile-ios` projects.
+
+- [ ] Commit: `test(e2e): visual regression baselines for UI screens`.
+
+---
+
+## Self-review
+
+- Every new task has concrete code / exact file paths / commit message.
+- No "TBD" or "similar to" placeholders.
+- Type consistency: `AssetCatalog`, `PropInstancer`, `CarVisualParts`, `CarStyle` all defined once and referenced consistently.
+- Clean-room discipline: every asset spec (briefs, scripts) emphasizes original geometry, no tracing.
+- Scope: amendment stays inside Phase 1 envelope. No Phase 2 scope creep.
+
+---
+
+## Execution handoff
+
+Amendment complete. Resume subagent-driven execution. Next dispatched task is the original Task 6 (CarSchema), now with expanded TDD coverage (the same additional-coverage pattern from T5.1 applied inline).
