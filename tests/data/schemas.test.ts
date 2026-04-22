@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TrackSchema } from "../../src/data/schemas";
+import { TrackSchema, CarSchema } from "../../src/data/schemas";
 
 const VALID_TRACK = {
   id: "sector-18",
@@ -81,5 +81,92 @@ describe("TrackSchema", () => {
   it("rejects when required lighting block is missing", () => {
     const { lighting: _lighting, ...rest } = VALID_TRACK;
     expect(() => TrackSchema.parse(rest)).toThrow();
+  });
+});
+
+const VALID_CAR = {
+  id: "boulevard",
+  displayName: "Boulevard",
+  class: "stock",
+  silhouette: "wedge-coupe",
+  tuning: {
+    mass: 1.2,
+    wheelbase: 0.22,
+    trackWidth: 0.14,
+    cgHeight: 0.05,
+    gripCeiling: 1.0,
+    torqueCurve: [
+      [0, 0.4],
+      [0.5, 1.0],
+      [1.0, 0.65],
+    ],
+    downforce: 0.2,
+    brakeStrength: 1.0,
+    steerAssist: 0.3,
+  },
+  cosmetic: {
+    paintSlots: ["#e0c874", "#20242a"],
+    wheelSlot: "slick",
+    antenna: "flag",
+  },
+};
+
+describe("CarSchema", () => {
+  it("accepts a valid car", () => {
+    const parsed = CarSchema.parse(VALID_CAR);
+    expect(parsed.id).toBe("boulevard");
+  });
+
+  it("rejects a car with an empty torque curve", () => {
+    const bad = {
+      ...VALID_CAR,
+      tuning: { ...VALID_CAR.tuning, torqueCurve: [] },
+    };
+    expect(() => CarSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects a car with a non-finite mass", () => {
+    const bad = {
+      ...VALID_CAR,
+      tuning: { ...VALID_CAR.tuning, mass: Number.POSITIVE_INFINITY },
+    };
+    expect(() => CarSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects a car with a negative wheelbase", () => {
+    const bad = {
+      ...VALID_CAR,
+      tuning: { ...VALID_CAR.tuning, wheelbase: -0.1 },
+    };
+    expect(() => CarSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects a car with no paint slots", () => {
+    const bad = {
+      ...VALID_CAR,
+      cosmetic: { ...VALID_CAR.cosmetic, paintSlots: [] },
+    };
+    expect(() => CarSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects an invalid class enum", () => {
+    const bad = { ...VALID_CAR, class: "monster-truck" };
+    expect(() => CarSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects an invalid hex paint color", () => {
+    const bad = {
+      ...VALID_CAR,
+      cosmetic: { ...VALID_CAR.cosmetic, paintSlots: ["not-hex"] },
+    };
+    expect(() => CarSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects a steerAssist outside [0, 1]", () => {
+    const bad = {
+      ...VALID_CAR,
+      tuning: { ...VALID_CAR.tuning, steerAssist: 1.5 },
+    };
+    expect(() => CarSchema.parse(bad)).toThrow();
   });
 });
