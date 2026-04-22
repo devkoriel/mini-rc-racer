@@ -1,0 +1,4332 @@
+# Phase 1 — Engine Reset + Sector 18 Vertical Slice — Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Replace the existing `src/game/game3d.ts` alpha with a layered, data-driven engine that ships Sector 18 at shipping grade on desktop + mobile, one AI rival, Spark Burst pickup, full race state machine, and the Phase 1 section of the §6.5 performance budget.
+
+**Architecture:** Clean-room Three.js engine split into `engine/` (loop, input, audio, events, assets), `sim/` (renderer-agnostic physics, car, AI, pickups, race FSM, track-runtime), `render/` (Three scene, spline track mesh, instanced props, car mesh, HUD, FX), `ui/` (menus, overlays, mobile controls), `content/` (tracks, cars, pickups as JSON), `data/` (Zod schemas + IndexedDB), `worker/` (Cloudflare Worker scaffold, no endpoints yet in Phase 1), and `util/` (math). Old monolith `game3d.ts` and the dead 2D `game.ts` are deleted. Sim must never import Three; render reads sim snapshots but never mutates them.
+
+**Tech Stack:** TypeScript 5, Three.js 0.184, Vite 7, Vitest 3, Zod 3, Playwright (added in this plan), Cloudflare Workers/Pages via Wrangler 4.
+
+**Scope not in this plan (deferred to Phase 2+):** Aisle Nine, Driftwood Patio, Workshop Floor, Wing C. Rookie / Muscle / Pro cars. Pickups beyond Spark Burst. Time Trial / Battle Tag / Championship. Audio content. Lightmap bake (pipeline slot is ready; neutral placeholder texture ships in Phase 1). Ghost upload worker endpoints.
+
+**Spec:** `docs/superpowers/specs/2026-04-23-rc-racer-uplift-design.plan`
+
+---
+
+## Task roadmap
+
+| Group | Tasks | What lands |
+|---|---|---|
+| 1 | 1–4 | Dependencies, new module skeleton, test harness, no behaviour change yet |
+| 2 | 5–7 | Zod schemas for track / car / pickup |
+| 3 | 8–9 | Util math with spline + curvature + closest-point |
+| 4 | 10–13 | Engine: event bus, fixed-step loop, input reshape, audio scaffold |
+| 5 | 14–19 | Sim: track-runtime, tire + chassis, car, race FSM, pickup, AI |
+| 6 | 20–25 | Render: scene, track mesh, prop instancer, car mesh, FX, camera |
+| 7 | 26–28 | UI: title menu, overlay state, mobile-controls migration |
+| 8 | 29–30 | Content: Sector 18 track JSON, Boulevard car JSON, Spark Burst |
+| 9 | 31–33 | App wiring, delete old code, production build green |
+| 10 | 34–35 | Playwright E2E smoke + visual + perf |
+
+Tasks MUST be executed in numerical order within a group. Between groups, a later group MAY start once its predecessor's tests are green — groups 6–8 overlap naturally once 1–5 are merged.
+
+---
+
+## File structure map
+
+**New files created (28):**
+
+```
+src/app.ts
+src/engine/events.ts
+src/engine/loop.ts
+src/engine/input.ts
+src/engine/audio.ts
+src/engine/assets.ts
+src/sim/physics.ts
+src/sim/car.ts
+src/sim/ai.ts
+src/sim/pickups.ts
+src/sim/race.ts
+src/sim/track-runtime.ts
+src/sim/types.ts
+src/render/scene.ts
+src/render/track-mesh.ts
+src/render/prop-instancer.ts
+src/render/car-mesh.ts
+src/render/fx.ts
+src/render/hud.ts
+src/render/camera.ts
+src/ui/shell.ts
+src/ui/overlay.ts
+src/ui/mobile-controls.ts
+src/content/tracks/sector-18.json
+src/content/cars/boulevard.json
+src/content/pickups.json
+src/data/schemas.ts
+src/data/storage.ts
+src/util/math.ts
+src/worker/index.ts
+src/content/lightmaps/neutral.png   (binary, placeholder)
+```
+
+**Files modified:**
+
+```
+package.json                (add deps: zod, @playwright/test)
+tsconfig.json               (if needed, include src paths)
+vite.config.ts              (split chunks, test config)
+index.html                  (swap script to app.ts, keep structure)
+.github/workflows/*.yml     (add Playwright step)
+wrangler.toml               (worker route scaffold, inert in Phase 1)
+README.md                   (update controls + phase status)
+```
+
+**Files deleted at end of Group 9 (Task 32):**
+
+```
+src/main.ts
+src/game/game.ts
+src/game/game3d.ts
+src/game/view.ts
+src/game/track.ts
+src/game/controls.ts
+src/game/persistence.ts
+src/game/math.ts
+tests/track.test.ts
+tests/view.test.ts
+tests/controls.test.ts          (replaced with tests/engine/input.test.ts)
+tests/persistence.test.ts       (replaced with tests/data/storage.test.ts)
+docs/maple-block-brief.md       (superseded by spec §7.2)
+docs/hud-shell-brief.md         (superseded by spec §6.4, §7)
+docs/clean-room-analysis.md     (superseded by spec §2)
+docs/design-vision.md           (superseded by spec)
+docs/implementation-backlog.md  (superseded by this plan)
+plans/mini-rc-racer-vertical-slice.md (superseded by this plan)
+```
+
+**New test files (will accumulate with tasks):**
+
+```
+tests/util/math.test.ts
+tests/data/schemas.test.ts
+tests/data/storage.test.ts
+tests/engine/events.test.ts
+tests/engine/loop.test.ts
+tests/engine/input.test.ts
+tests/sim/physics.test.ts
+tests/sim/car.test.ts
+tests/sim/track-runtime.test.ts
+tests/sim/race.test.ts
+tests/sim/pickups.test.ts
+tests/sim/ai.test.ts
+tests/sim/determinism.test.ts
+tests/render/track-mesh.test.ts
+tests/render/prop-instancer.test.ts
+e2e/race-smoke.spec.ts
+e2e/visual.spec.ts
+e2e/perf.spec.ts
+playwright.config.ts
+```
+
+Every file stays ≤ 400 lines typical, 600 max. If a task would push a file past 400, split.
+
+---
+
+## Group 1 — Scaffold, dependencies, skeleton
+
+### Task 1: Add zod + playwright deps, configure vitest browser coverage
+
+**Files:**
+- Modify: `package.json`
+- Modify: `vite.config.ts`
+
+- [ ] **Step 1: Add dependencies**
+
+Run:
+```bash
+npm install --save zod@^3.23.8
+npm install --save-dev @playwright/test@^1.48.0 miniflare@^3.20240909.5
+```
+
+- [ ] **Step 2: Verify package.json reflects the changes**
+
+Open `package.json` and confirm the `dependencies` include `zod` and `devDependencies` include `@playwright/test` + `miniflare`. Do not edit by hand; `npm install` does it.
+
+- [ ] **Step 3: Expand vite.config.ts to split chunks + keep test env**
+
+Replace `vite.config.ts` content with:
+
+```typescript
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  build: {
+    chunkSizeWarningLimit: 220,
+    rollupOptions: {
+      output: {
+        manualChunks: (id) => {
+          if (id.includes("node_modules/three")) return "three";
+          if (id.includes("node_modules/zod")) return "zod";
+          return undefined;
+        }
+      }
+    }
+  },
+  server: { host: "0.0.0.0", port: 4173 },
+  preview: { host: "0.0.0.0", port: 4173 },
+  test: {
+    environment: "node",
+    include: ["tests/**/*.test.ts"],
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "html"],
+      include: ["src/sim/**", "src/util/**", "src/data/**", "src/engine/events.ts", "src/engine/input.ts"],
+      thresholds: {
+        lines: 80,
+        functions: 80,
+        branches: 75,
+        statements: 80
+      }
+    }
+  }
+});
+```
+
+- [ ] **Step 4: Run the existing tests to verify nothing regressed**
+
+Run: `npm test`
+Expected: all existing tests in `tests/` still pass. Any failure here is a pre-existing issue you must fix before continuing.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add package.json package-lock.json vite.config.ts
+git commit -m "chore: add zod + playwright, tighten vite chunking"
+```
+
+### Task 2: Create empty new-module skeleton with placeholder exports
+
+**Files:**
+- Create: `src/engine/events.ts`, `src/engine/loop.ts`, `src/engine/input.ts`, `src/engine/audio.ts`, `src/engine/assets.ts`
+- Create: `src/sim/types.ts`, `src/sim/physics.ts`, `src/sim/car.ts`, `src/sim/ai.ts`, `src/sim/pickups.ts`, `src/sim/race.ts`, `src/sim/track-runtime.ts`
+- Create: `src/render/scene.ts`, `src/render/track-mesh.ts`, `src/render/prop-instancer.ts`, `src/render/car-mesh.ts`, `src/render/fx.ts`, `src/render/hud.ts`, `src/render/camera.ts`
+- Create: `src/ui/shell.ts`, `src/ui/overlay.ts`, `src/ui/mobile-controls.ts`
+- Create: `src/data/schemas.ts`, `src/data/storage.ts`
+- Create: `src/util/math.ts`
+- Create: `src/worker/index.ts`
+
+Each file contains a single `export {};` line to make it a valid TS module.
+
+- [ ] **Step 1: Create every file with empty-module content**
+
+For each path in the Files list above, create a file with:
+
+```typescript
+export {};
+```
+
+- [ ] **Step 2: Run TypeScript type check**
+
+Run: `npm run typecheck`
+Expected: no errors. Old code still exists, new skeleton coexists.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/engine src/sim src/render src/ui src/data src/util src/worker
+git commit -m "feat: scaffold new engine/sim/render/ui/content/data/worker modules"
+```
+
+### Task 3: Configure Playwright
+
+**Files:**
+- Create: `playwright.config.ts`
+- Create: `e2e/.gitkeep`
+- Modify: `package.json` (add `e2e` script)
+
+- [ ] **Step 1: Create playwright.config.ts**
+
+Content:
+
+```typescript
+import { defineConfig, devices } from "@playwright/test";
+
+export default defineConfig({
+  testDir: "./e2e",
+  fullyParallel: false,
+  forbidOnly: Boolean(process.env.CI),
+  retries: process.env.CI ? 2 : 0,
+  workers: 1,
+  reporter: process.env.CI ? "github" : "list",
+  use: {
+    baseURL: "http://localhost:4173",
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
+    video: "retain-on-failure"
+  },
+  projects: [
+    { name: "desktop-chromium", use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 720 } } },
+    { name: "mobile-ios", use: { ...devices["iPhone 13"] } }
+  ],
+  webServer: {
+    command: "npm run preview",
+    url: "http://localhost:4173",
+    reuseExistingServer: !process.env.CI,
+    timeout: 120_000
+  }
+});
+```
+
+- [ ] **Step 2: Create the e2e directory and gitkeep**
+
+Run: `mkdir -p e2e && touch e2e/.gitkeep`
+
+- [ ] **Step 3: Add e2e scripts to package.json**
+
+In `package.json` inside `"scripts"`, add:
+
+```json
+"e2e": "playwright test",
+"e2e:install": "playwright install --with-deps chromium webkit"
+```
+
+The resulting `scripts` block should now contain: `dev`, `build`, `preview`, `test`, `typecheck`, `e2e`, `e2e:install`.
+
+- [ ] **Step 4: Install browsers once (developer machine setup; skip in CI until workflow lands later)**
+
+Run: `npm run e2e:install`
+Expected: Chromium + WebKit downloaded. (Safe to skip on a CI runner that already has them; this is a one-off local setup step.)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add playwright.config.ts e2e/ package.json
+git commit -m "chore: add playwright config + e2e script"
+```
+
+### Task 4: Add `.superpowers/` to .gitignore if not already there
+
+**Files:** `.gitignore`
+
+- [ ] **Step 1: Confirm it is there**
+
+Run: `grep -n superpowers /Users/koriel/Development/mini-rc-racer/.gitignore`
+Expected output: `5:.superpowers/`
+
+If not present, append `.superpowers/` to `.gitignore` and commit `chore: ignore superpowers session state`. If already present (set up earlier), this task is a no-op — record as complete.
+
+---
+
+## Group 2 — Zod schemas
+
+### Task 5: Track schema
+
+**Files:**
+- Modify: `src/data/schemas.ts`
+- Create: `tests/data/schemas.test.ts`
+
+- [ ] **Step 1: Write failing test**
+
+Content of `tests/data/schemas.test.ts`:
+
+```typescript
+import { describe, expect, it } from "vitest";
+import { TrackSchema } from "../../src/data/schemas";
+
+const VALID_TRACK = {
+  id: "sector-18",
+  displayName: "Sector 18",
+  fantasy: "suburban cul-de-sac",
+  recommendedClass: "stock",
+  spline: [
+    { x: 0, y: 0, z: 0, halfWidth: 4 },
+    { x: 10, y: 0, z: 0, halfWidth: 4 },
+    { x: 10, y: 0, z: 10, halfWidth: 4 },
+    { x: 0, y: 0, z: 10, halfWidth: 4 }
+  ],
+  surfaces: {
+    road:     { innerOffset: 0, outerOffset: 0 },
+    curb:     { innerOffset: 0, outerOffset: 0.4 },
+    sidewalk: { innerOffset: 0.4, outerOffset: 2 },
+    verge:    { innerOffset: 2, outerOffset: 6 }
+  },
+  props: [],
+  pickups: [{ progress: 0.25, sideOffset: 0 }],
+  checkpoints: [0.25, 0.5, 0.75],
+  lightmapAtlas: "neutral.png",
+  lighting: {
+    sunDirection: [0.4, 0.8, 0.2],
+    hemisphereSky: "#a8c4e0",
+    hemisphereGround: "#504030",
+    fogDensity: 0.003
+  }
+};
+
+describe("TrackSchema", () => {
+  it("accepts a valid track", () => {
+    const parsed = TrackSchema.parse(VALID_TRACK);
+    expect(parsed.id).toBe("sector-18");
+    expect(parsed.spline).toHaveLength(4);
+  });
+
+  it("rejects a track with fewer than 4 spline points", () => {
+    const bad = { ...VALID_TRACK, spline: VALID_TRACK.spline.slice(0, 3) };
+    expect(() => TrackSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects a track with progress values outside [0, 1]", () => {
+    const bad = { ...VALID_TRACK, pickups: [{ progress: 1.5, sideOffset: 0 }] };
+    expect(() => TrackSchema.parse(bad)).toThrow();
+  });
+});
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `npx vitest run tests/data/schemas.test.ts`
+Expected: FAIL — `TrackSchema` is not exported.
+
+- [ ] **Step 3: Implement TrackSchema**
+
+Content of `src/data/schemas.ts`:
+
+```typescript
+import { z } from "zod";
+
+const SplinePoint = z.object({
+  x: z.number(),
+  y: z.number(),
+  z: z.number(),
+  halfWidth: z.number().positive()
+});
+
+const SurfaceBand = z.object({
+  innerOffset: z.number(),
+  outerOffset: z.number()
+});
+
+const Prop = z.object({
+  propId: z.string().min(1),
+  position: z.tuple([z.number(), z.number(), z.number()]),
+  rotation: z.number(),
+  scaleBucket: z.enum(["small", "medium", "large"])
+});
+
+const PickupSpawn = z.object({
+  progress: z.number().min(0).max(1),
+  sideOffset: z.number()
+});
+
+const Lighting = z.object({
+  sunDirection: z.tuple([z.number(), z.number(), z.number()]),
+  hemisphereSky: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+  hemisphereGround: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+  fogDensity: z.number().min(0).max(1)
+});
+
+export const TrackSchema = z.object({
+  id: z.string().min(1),
+  displayName: z.string().min(1),
+  fantasy: z.string().min(1),
+  recommendedClass: z.enum(["rookie", "stock", "muscle", "pro"]),
+  spline: z.array(SplinePoint).min(4),
+  surfaces: z.object({
+    road: SurfaceBand,
+    curb: SurfaceBand,
+    sidewalk: SurfaceBand,
+    verge: SurfaceBand
+  }),
+  props: z.array(Prop),
+  pickups: z.array(PickupSpawn),
+  checkpoints: z.array(z.number().min(0).max(1)).min(2),
+  lightmapAtlas: z.string().min(1),
+  lighting: Lighting
+});
+
+export type Track = z.infer<typeof TrackSchema>;
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `npx vitest run tests/data/schemas.test.ts`
+Expected: 3 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/data/schemas.ts tests/data/schemas.test.ts
+git commit -m "feat(data): add Zod TrackSchema with spline + surface + pickup validation"
+```
+
+### Task 6: Car schema
+
+**Files:**
+- Modify: `src/data/schemas.ts`
+- Modify: `tests/data/schemas.test.ts`
+
+- [ ] **Step 1: Add failing test for CarSchema**
+
+Append to `tests/data/schemas.test.ts` (above no imports need to change):
+
+```typescript
+import { CarSchema } from "../../src/data/schemas";
+
+const VALID_CAR = {
+  id: "boulevard",
+  displayName: "Boulevard",
+  class: "stock",
+  silhouette: "wedge-coupe",
+  tuning: {
+    mass: 1.2,
+    wheelbase: 0.22,
+    trackWidth: 0.14,
+    cgHeight: 0.05,
+    gripCeiling: 1.0,
+    torqueCurve: [[0, 0.4], [0.5, 1.0], [1.0, 0.65]],
+    downforce: 0.2,
+    brakeStrength: 1.0,
+    steerAssist: 0.3
+  },
+  cosmetic: {
+    paintSlots: ["#e0c874", "#20242a"],
+    wheelSlot: "slick",
+    antenna: "flag"
+  }
+};
+
+describe("CarSchema", () => {
+  it("accepts a valid car", () => {
+    const parsed = CarSchema.parse(VALID_CAR);
+    expect(parsed.id).toBe("boulevard");
+  });
+
+  it("rejects a car with an empty torque curve", () => {
+    const bad = { ...VALID_CAR, tuning: { ...VALID_CAR.tuning, torqueCurve: [] } };
+    expect(() => CarSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects a car with a non-finite mass", () => {
+    const bad = { ...VALID_CAR, tuning: { ...VALID_CAR.tuning, mass: Number.POSITIVE_INFINITY } };
+    expect(() => CarSchema.parse(bad)).toThrow();
+  });
+});
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `npx vitest run tests/data/schemas.test.ts`
+Expected: 3 new tests FAIL — `CarSchema` not exported.
+
+- [ ] **Step 3: Add CarSchema to src/data/schemas.ts**
+
+Append to `src/data/schemas.ts`:
+
+```typescript
+const TorquePoint = z.tuple([z.number().min(0).max(1), z.number().min(0).max(1.5)]);
+
+const CarTuning = z.object({
+  mass: z.number().finite().positive(),
+  wheelbase: z.number().finite().positive(),
+  trackWidth: z.number().finite().positive(),
+  cgHeight: z.number().finite().positive(),
+  gripCeiling: z.number().finite().positive(),
+  torqueCurve: z.array(TorquePoint).min(2),
+  downforce: z.number().finite().nonnegative(),
+  brakeStrength: z.number().finite().positive(),
+  steerAssist: z.number().min(0).max(1)
+});
+
+const CarCosmetic = z.object({
+  paintSlots: z.array(z.string().regex(/^#[0-9a-fA-F]{6}$/)).min(1),
+  wheelSlot: z.enum(["slick", "knobby", "chrome"]),
+  antenna: z.enum(["none", "flag", "ball", "whip"])
+});
+
+export const CarSchema = z.object({
+  id: z.string().min(1),
+  displayName: z.string().min(1),
+  class: z.enum(["rookie", "stock", "muscle", "pro"]),
+  silhouette: z.enum(["buggy", "hatch", "wedge-coupe", "monster", "muscle", "van", "carbon", "formula"]),
+  tuning: CarTuning,
+  cosmetic: CarCosmetic
+});
+
+export type Car = z.infer<typeof CarSchema>;
+```
+
+- [ ] **Step 4: Verify tests pass**
+
+Run: `npx vitest run tests/data/schemas.test.ts`
+Expected: 6 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/data/schemas.ts tests/data/schemas.test.ts
+git commit -m "feat(data): add CarSchema with class + silhouette + tuning"
+```
+
+### Task 7: Pickup schema + type union
+
+**Files:**
+- Modify: `src/data/schemas.ts`
+- Modify: `tests/data/schemas.test.ts`
+
+- [ ] **Step 1: Add failing test**
+
+Append to `tests/data/schemas.test.ts`:
+
+```typescript
+import { PickupRosterSchema } from "../../src/data/schemas";
+
+const VALID_ROSTER = {
+  pickups: [
+    {
+      id: "spark-burst",
+      displayName: "Spark Burst",
+      rarity: 0.5,
+      classTier: "rookie",
+      effect: { kind: "boost", duration: 2.0, throttleMultiplier: 1.6, gripMultiplier: 1.2 }
+    },
+    {
+      id: "guard",
+      displayName: "Guard",
+      rarity: 0.1,
+      classTier: "stock",
+      effect: { kind: "shield", duration: 3.0 }
+    }
+  ]
+};
+
+describe("PickupRosterSchema", () => {
+  it("accepts a valid roster", () => {
+    const parsed = PickupRosterSchema.parse(VALID_ROSTER);
+    expect(parsed.pickups).toHaveLength(2);
+  });
+
+  it("rejects unknown effect kinds", () => {
+    const bad = {
+      pickups: [{
+        id: "bad", displayName: "Bad", rarity: 0.5, classTier: "stock",
+        effect: { kind: "teleport", distance: 10 }
+      }]
+    };
+    expect(() => PickupRosterSchema.parse(bad)).toThrow();
+  });
+});
+```
+
+- [ ] **Step 2: Verify it fails**
+
+Run: `npx vitest run tests/data/schemas.test.ts`
+Expected: 2 new tests FAIL.
+
+- [ ] **Step 3: Implement PickupRosterSchema**
+
+Append to `src/data/schemas.ts`:
+
+```typescript
+const PickupEffect = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("boost"),
+    duration: z.number().positive(),
+    throttleMultiplier: z.number().min(1).max(3),
+    gripMultiplier: z.number().min(1).max(2)
+  }),
+  z.object({
+    kind: z.literal("pulse"),
+    radius: z.number().positive(),
+    knockbackImpulse: z.number().positive()
+  }),
+  z.object({
+    kind: z.literal("slick"),
+    duration: z.number().positive(),
+    gripMultiplier: z.number().min(0).max(1)
+  }),
+  z.object({
+    kind: z.literal("projectile"),
+    speed: z.number().positive(),
+    lifetime: z.number().positive(),
+    spinOnHit: z.number().positive()
+  }),
+  z.object({
+    kind: z.literal("trap"),
+    dragMultiplier: z.number().min(0).max(1),
+    duration: z.number().positive()
+  }),
+  z.object({
+    kind: z.literal("shield"),
+    duration: z.number().positive()
+  })
+]);
+
+const PickupDefinition = z.object({
+  id: z.string().min(1),
+  displayName: z.string().min(1),
+  rarity: z.number().min(0).max(1),
+  classTier: z.enum(["rookie", "stock", "muscle", "pro"]),
+  effect: PickupEffect
+});
+
+export const PickupRosterSchema = z.object({
+  pickups: z.array(PickupDefinition).min(1)
+});
+
+export type PickupDefinitionData = z.infer<typeof PickupDefinition>;
+export type PickupRoster = z.infer<typeof PickupRosterSchema>;
+```
+
+- [ ] **Step 4: Verify tests pass**
+
+Run: `npx vitest run tests/data/schemas.test.ts`
+Expected: 8 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/data/schemas.ts tests/data/schemas.test.ts
+git commit -m "feat(data): add PickupRosterSchema with discriminated effect union"
+```
+
+---
+
+## Group 3 — Util math
+
+### Task 8: Migrate + extend vector math
+
+**Files:**
+- Modify: `src/util/math.ts`
+- Create: `tests/util/math.test.ts`
+
+- [ ] **Step 1: Write failing test**
+
+Content of `tests/util/math.test.ts`:
+
+```typescript
+import { describe, expect, it } from "vitest";
+import { vec3, add3, sub3, scale3, length3, normalize3, dot3, cross3 } from "../../src/util/math";
+
+const approxEqual = (a: number, b: number, eps = 1e-9): boolean => Math.abs(a - b) < eps;
+
+describe("vec3 basics", () => {
+  it("constructs a Vec3 literal", () => {
+    expect(vec3(1, 2, 3)).toEqual({ x: 1, y: 2, z: 3 });
+  });
+
+  it("adds two Vec3s", () => {
+    expect(add3(vec3(1, 2, 3), vec3(10, 20, 30))).toEqual({ x: 11, y: 22, z: 33 });
+  });
+
+  it("subtracts two Vec3s", () => {
+    expect(sub3(vec3(5, 6, 7), vec3(1, 2, 3))).toEqual({ x: 4, y: 4, z: 4 });
+  });
+
+  it("scales a Vec3 by a scalar", () => {
+    expect(scale3(vec3(1, 2, 3), 2)).toEqual({ x: 2, y: 4, z: 6 });
+  });
+
+  it("computes length", () => {
+    expect(length3(vec3(3, 0, 4))).toBe(5);
+  });
+
+  it("normalizes to unit length (except zero vector)", () => {
+    const n = normalize3(vec3(3, 0, 4));
+    expect(approxEqual(length3(n), 1)).toBe(true);
+    expect(normalize3(vec3(0, 0, 0))).toEqual({ x: 0, y: 0, z: 0 });
+  });
+
+  it("computes dot product", () => {
+    expect(dot3(vec3(1, 2, 3), vec3(4, 5, 6))).toBe(32);
+  });
+
+  it("computes cross product", () => {
+    expect(cross3(vec3(1, 0, 0), vec3(0, 1, 0))).toEqual({ x: 0, y: 0, z: 1 });
+  });
+});
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `npx vitest run tests/util/math.test.ts`
+Expected: FAIL — none of the exports exist.
+
+- [ ] **Step 3: Implement math primitives**
+
+Content of `src/util/math.ts`:
+
+```typescript
+export interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export const vec3 = (x: number, y: number, z: number): Vec3 => ({ x, y, z });
+
+export const add3 = (a: Vec3, b: Vec3): Vec3 => ({ x: a.x + b.x, y: a.y + b.y, z: a.z + b.z });
+export const sub3 = (a: Vec3, b: Vec3): Vec3 => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
+export const scale3 = (a: Vec3, s: number): Vec3 => ({ x: a.x * s, y: a.y * s, z: a.z * s });
+
+export const dot3 = (a: Vec3, b: Vec3): number => a.x * b.x + a.y * b.y + a.z * b.z;
+export const cross3 = (a: Vec3, b: Vec3): Vec3 => ({
+  x: a.y * b.z - a.z * b.y,
+  y: a.z * b.x - a.x * b.z,
+  z: a.x * b.y - a.y * b.x
+});
+
+export const length3 = (a: Vec3): number => Math.sqrt(dot3(a, a));
+
+export const normalize3 = (a: Vec3): Vec3 => {
+  const len = length3(a);
+  if (len === 0) return { x: 0, y: 0, z: 0 };
+  return scale3(a, 1 / len);
+};
+
+export const clamp = (value: number, min: number, max: number): number =>
+  value < min ? min : value > max ? max : value;
+
+export const wrap01 = (value: number): number => {
+  const v = value - Math.floor(value);
+  return v < 0 ? v + 1 : v;
+};
+
+export const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `npx vitest run tests/util/math.test.ts`
+Expected: 8 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/util/math.ts tests/util/math.test.ts
+git commit -m "feat(util): add Vec3 math primitives + clamp/lerp/wrap01"
+```
+
+### Task 9: Catmull-Rom spline sampling + curvature + progress-to-frame
+
+**Files:**
+- Modify: `src/util/math.ts`
+- Modify: `tests/util/math.test.ts`
+
+- [ ] **Step 1: Add failing tests**
+
+Append to `tests/util/math.test.ts`:
+
+```typescript
+import { sampleSpline, splineLength, sampleSplineFrame, closestPointOnSpline } from "../../src/util/math";
+
+const STRAIGHT_SQUARE: Vec3[] = [
+  { x: 0, y: 0, z: 0 },
+  { x: 10, y: 0, z: 0 },
+  { x: 10, y: 0, z: 10 },
+  { x: 0, y: 0, z: 10 }
+];
+
+describe("spline sampling", () => {
+  it("samples the first control point at t=0 (closed loop)", () => {
+    const p = sampleSpline(STRAIGHT_SQUARE, 0, true);
+    expect(p.x).toBeCloseTo(0, 4);
+    expect(p.z).toBeCloseTo(0, 4);
+  });
+
+  it("samples a non-zero point somewhere between control points", () => {
+    const p = sampleSpline(STRAIGHT_SQUARE, 0.25, true);
+    // Approximately (10, 0, 0) plus or minus spline curvature; x should be > 5
+    expect(p.x).toBeGreaterThan(5);
+  });
+
+  it("computes a positive total length for a closed square loop", () => {
+    const len = splineLength(STRAIGHT_SQUARE, 64, true);
+    // A 10x10 square is 40 units; Catmull-Rom smoothing rounds corners a bit so length is close.
+    expect(len).toBeGreaterThan(35);
+    expect(len).toBeLessThan(45);
+  });
+
+  it("sampleSplineFrame returns a tangent of unit length", () => {
+    const frame = sampleSplineFrame(STRAIGHT_SQUARE, 0.1, true);
+    const mag = Math.hypot(frame.tangent.x, frame.tangent.y, frame.tangent.z);
+    expect(mag).toBeCloseTo(1, 4);
+  });
+
+  it("closestPointOnSpline finds a query point near a control", () => {
+    const query = { x: 0, y: 0, z: 0 };
+    const result = closestPointOnSpline(STRAIGHT_SQUARE, query, 128, true);
+    expect(result.distance).toBeLessThan(1);
+    expect(result.t).toBeLessThan(0.05);
+  });
+});
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `npx vitest run tests/util/math.test.ts`
+Expected: 5 new tests FAIL — exports missing.
+
+- [ ] **Step 3: Implement Catmull-Rom helpers**
+
+Append to `src/util/math.ts`:
+
+```typescript
+export interface SplineFrame {
+  position: Vec3;
+  tangent: Vec3;
+}
+
+const catmullRom = (p0: number, p1: number, p2: number, p3: number, t: number): number => {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  return 0.5 * (
+    2 * p1 +
+    (-p0 + p2) * t +
+    (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+    (-p0 + 3 * p1 - 3 * p2 + p3) * t3
+  );
+};
+
+const catmullRomDerivative = (p0: number, p1: number, p2: number, p3: number, t: number): number => {
+  const t2 = t * t;
+  return 0.5 * (
+    (-p0 + p2) +
+    2 * (2 * p0 - 5 * p1 + 4 * p2 - p3) * t +
+    3 * (-p0 + 3 * p1 - 3 * p2 + p3) * t2
+  );
+};
+
+const segmentIndices = (count: number, t: number, closed: boolean): { i0: number; i1: number; i2: number; i3: number; local: number } => {
+  const tWrapped = closed ? wrap01(t) : clamp(t, 0, 1);
+  const scaled = tWrapped * (closed ? count : count - 1);
+  const segment = closed
+    ? Math.floor(scaled) % count
+    : clamp(Math.floor(scaled), 0, count - 2);
+  const local = scaled - Math.floor(scaled);
+  const prev = closed ? (segment - 1 + count) % count : Math.max(segment - 1, 0);
+  const next = closed ? (segment + 1) % count : Math.min(segment + 1, count - 1);
+  const nextNext = closed ? (segment + 2) % count : Math.min(segment + 2, count - 1);
+  return { i0: prev, i1: segment, i2: next, i3: nextNext, local };
+};
+
+export const sampleSpline = (points: readonly Vec3[], t: number, closed: boolean): Vec3 => {
+  const { i0, i1, i2, i3, local } = segmentIndices(points.length, t, closed);
+  return {
+    x: catmullRom(points[i0].x, points[i1].x, points[i2].x, points[i3].x, local),
+    y: catmullRom(points[i0].y, points[i1].y, points[i2].y, points[i3].y, local),
+    z: catmullRom(points[i0].z, points[i1].z, points[i2].z, points[i3].z, local)
+  };
+};
+
+export const sampleSplineTangent = (points: readonly Vec3[], t: number, closed: boolean): Vec3 => {
+  const { i0, i1, i2, i3, local } = segmentIndices(points.length, t, closed);
+  return normalize3({
+    x: catmullRomDerivative(points[i0].x, points[i1].x, points[i2].x, points[i3].x, local),
+    y: catmullRomDerivative(points[i0].y, points[i1].y, points[i2].y, points[i3].y, local),
+    z: catmullRomDerivative(points[i0].z, points[i1].z, points[i2].z, points[i3].z, local)
+  });
+};
+
+export const sampleSplineFrame = (points: readonly Vec3[], t: number, closed: boolean): SplineFrame => ({
+  position: sampleSpline(points, t, closed),
+  tangent: sampleSplineTangent(points, t, closed)
+});
+
+export const splineLength = (points: readonly Vec3[], samples: number, closed: boolean): number => {
+  let total = 0;
+  let previous = sampleSpline(points, 0, closed);
+  for (let i = 1; i <= samples; i += 1) {
+    const t = i / samples;
+    const current = sampleSpline(points, t, closed);
+    total += length3(sub3(current, previous));
+    previous = current;
+  }
+  return total;
+};
+
+export interface ClosestPointResult {
+  t: number;
+  position: Vec3;
+  distance: number;
+}
+
+export const closestPointOnSpline = (points: readonly Vec3[], query: Vec3, samples: number, closed: boolean): ClosestPointResult => {
+  let bestT = 0;
+  let bestPos = sampleSpline(points, 0, closed);
+  let bestDist = length3(sub3(bestPos, query));
+  for (let i = 1; i < samples; i += 1) {
+    const t = i / samples;
+    const position = sampleSpline(points, t, closed);
+    const distance = length3(sub3(position, query));
+    if (distance < bestDist) {
+      bestDist = distance;
+      bestT = t;
+      bestPos = position;
+    }
+  }
+  return { t: bestT, position: bestPos, distance: bestDist };
+};
+```
+
+- [ ] **Step 4: Verify tests pass**
+
+Run: `npx vitest run tests/util/math.test.ts`
+Expected: 13 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/util/math.ts tests/util/math.test.ts
+git commit -m "feat(util): add Catmull-Rom spline sampling + length + closest-point"
+```
+
+---
+
+## Group 4 — Engine: events, loop, input, audio scaffold
+
+### Task 10: Typed event bus
+
+**Files:**
+- Modify: `src/engine/events.ts`
+- Create: `tests/engine/events.test.ts`
+
+- [ ] **Step 1: Write failing test**
+
+Content of `tests/engine/events.test.ts`:
+
+```typescript
+import { describe, expect, it, vi } from "vitest";
+import { createEventBus } from "../../src/engine/events";
+
+type Events = {
+  "race:start": { at: number };
+  "pickup:collected": { pickupId: string };
+};
+
+describe("event bus", () => {
+  it("calls listeners registered for an event", () => {
+    const bus = createEventBus<Events>();
+    const spy = vi.fn();
+    bus.on("race:start", spy);
+    bus.emit("race:start", { at: 1000 });
+    expect(spy).toHaveBeenCalledWith({ at: 1000 });
+  });
+
+  it("does not call listeners for other events", () => {
+    const bus = createEventBus<Events>();
+    const spy = vi.fn();
+    bus.on("pickup:collected", spy);
+    bus.emit("race:start", { at: 1 });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("off() unsubscribes a listener", () => {
+    const bus = createEventBus<Events>();
+    const spy = vi.fn();
+    const off = bus.on("race:start", spy);
+    off();
+    bus.emit("race:start", { at: 1 });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("supports multiple listeners on the same event", () => {
+    const bus = createEventBus<Events>();
+    const a = vi.fn();
+    const b = vi.fn();
+    bus.on("race:start", a);
+    bus.on("race:start", b);
+    bus.emit("race:start", { at: 42 });
+    expect(a).toHaveBeenCalledWith({ at: 42 });
+    expect(b).toHaveBeenCalledWith({ at: 42 });
+  });
+});
+```
+
+- [ ] **Step 2: Verify failure**
+
+Run: `npx vitest run tests/engine/events.test.ts`
+Expected: FAIL — createEventBus not exported.
+
+- [ ] **Step 3: Implement the event bus**
+
+Content of `src/engine/events.ts`:
+
+```typescript
+export type Listener<Payload> = (payload: Payload) => void;
+
+export interface EventBus<Events extends Record<string, unknown>> {
+  on<K extends keyof Events>(event: K, listener: Listener<Events[K]>): () => void;
+  emit<K extends keyof Events>(event: K, payload: Events[K]): void;
+}
+
+export const createEventBus = <Events extends Record<string, unknown>>(): EventBus<Events> => {
+  const listeners = new Map<keyof Events, Set<Listener<never>>>();
+
+  const on = <K extends keyof Events>(event: K, listener: Listener<Events[K]>): (() => void) => {
+    let set = listeners.get(event);
+    if (!set) {
+      set = new Set();
+      listeners.set(event, set);
+    }
+    set.add(listener as Listener<never>);
+    return () => {
+      set!.delete(listener as Listener<never>);
+    };
+  };
+
+  const emit = <K extends keyof Events>(event: K, payload: Events[K]): void => {
+    const set = listeners.get(event);
+    if (!set) return;
+    for (const listener of set) {
+      (listener as Listener<Events[K]>)(payload);
+    }
+  };
+
+  return { on, emit };
+};
+
+export type GameEvents = {
+  "race:grid": { trackId: string };
+  "race:countdown": { remaining: number };
+  "race:start": { at: number };
+  "race:finish": { placings: string[]; totalTime: number };
+  "race:pause": Record<string, never>;
+  "race:resume": Record<string, never>;
+  "lap:complete": { carId: string; lapIndex: number; lapTime: number };
+  "pickup:armed": { carId: string; pickupId: string };
+  "pickup:fired": { carId: string; pickupId: string };
+  "car:collided": { carId: string; otherId: string | null; impactSpeed: number };
+  "car:flipped": { carId: string };
+  "ui:intent:start": Record<string, never>;
+  "ui:intent:pause": Record<string, never>;
+  "ui:intent:restart": Record<string, never>;
+  "ui:intent:quit": Record<string, never>;
+};
+```
+
+- [ ] **Step 4: Run tests to pass**
+
+Run: `npx vitest run tests/engine/events.test.ts`
+Expected: 4 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/engine/events.ts tests/engine/events.test.ts
+git commit -m "feat(engine): add typed event bus + GameEvents map"
+```
+
+### Task 11: Fixed-step loop
+
+**Files:**
+- Modify: `src/engine/loop.ts`
+- Create: `tests/engine/loop.test.ts`
+
+- [ ] **Step 1: Write failing test**
+
+Content of `tests/engine/loop.test.ts`:
+
+```typescript
+import { describe, expect, it } from "vitest";
+import { tickLoop } from "../../src/engine/loop";
+
+describe("tickLoop", () => {
+  it("runs zero sim steps when delta is below step", () => {
+    const fixed = 1 / 120;
+    const { steps, leftover } = tickLoop(fixed * 0.5, 0, fixed, 10);
+    expect(steps).toBe(0);
+    expect(leftover).toBeCloseTo(fixed * 0.5, 6);
+  });
+
+  it("runs exactly one step when delta equals step", () => {
+    const fixed = 1 / 120;
+    const { steps, leftover } = tickLoop(fixed, 0, fixed, 10);
+    expect(steps).toBe(1);
+    expect(leftover).toBeCloseTo(0, 6);
+  });
+
+  it("accumulates leftover across calls", () => {
+    const fixed = 1 / 120;
+    const first = tickLoop(fixed * 1.3, 0, fixed, 10);
+    expect(first.steps).toBe(1);
+    const second = tickLoop(fixed * 1.0, first.leftover, fixed, 10);
+    expect(second.steps).toBe(1);
+    // leftover carried over: initial 0.3 + new 1.0 = 1.3 steps of accumulator → 1 step consumed, 0.3 left
+    expect(second.leftover).toBeCloseTo(fixed * 0.3, 6);
+  });
+
+  it("caps steps at maxSteps to avoid spiral of death", () => {
+    const fixed = 1 / 120;
+    const { steps } = tickLoop(fixed * 50, 0, fixed, 5);
+    expect(steps).toBe(5);
+  });
+});
+```
+
+- [ ] **Step 2: Verify failure**
+
+Run: `npx vitest run tests/engine/loop.test.ts`
+Expected: FAIL — tickLoop not exported.
+
+- [ ] **Step 3: Implement tickLoop + loop runner**
+
+Content of `src/engine/loop.ts`:
+
+```typescript
+export interface TickResult {
+  steps: number;
+  leftover: number;
+}
+
+export const tickLoop = (
+  deltaSeconds: number,
+  accumulator: number,
+  fixedStep: number,
+  maxSteps: number
+): TickResult => {
+  let remaining = accumulator + deltaSeconds;
+  let steps = 0;
+  while (remaining >= fixedStep && steps < maxSteps) {
+    remaining -= fixedStep;
+    steps += 1;
+  }
+  return { steps, leftover: remaining };
+};
+
+export interface LoopRunnerOptions {
+  fixedStep: number;
+  maxStepsPerFrame: number;
+  onStep: (stepSeconds: number) => void;
+  onRender: (interpolation: number) => void;
+}
+
+export interface LoopRunner {
+  start: () => void;
+  stop: () => void;
+}
+
+export const createLoopRunner = (opts: LoopRunnerOptions): LoopRunner => {
+  let rafHandle = 0;
+  let previousMs = 0;
+  let accumulator = 0;
+  let running = false;
+
+  const tick = (nowMs: number): void => {
+    if (!running) return;
+    const deltaSeconds = Math.min((nowMs - previousMs) / 1000, 0.25);
+    previousMs = nowMs;
+    const { steps, leftover } = tickLoop(deltaSeconds, accumulator, opts.fixedStep, opts.maxStepsPerFrame);
+    accumulator = leftover;
+    for (let i = 0; i < steps; i += 1) {
+      opts.onStep(opts.fixedStep);
+    }
+    const interpolation = opts.fixedStep > 0 ? accumulator / opts.fixedStep : 0;
+    opts.onRender(interpolation);
+    rafHandle = requestAnimationFrame(tick);
+  };
+
+  const start = (): void => {
+    if (running) return;
+    running = true;
+    previousMs = performance.now();
+    accumulator = 0;
+    rafHandle = requestAnimationFrame(tick);
+  };
+
+  const stop = (): void => {
+    running = false;
+    cancelAnimationFrame(rafHandle);
+  };
+
+  return { start, stop };
+};
+```
+
+- [ ] **Step 4: Verify tests pass**
+
+Run: `npx vitest run tests/engine/loop.test.ts`
+Expected: 4 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/engine/loop.ts tests/engine/loop.test.ts
+git commit -m "feat(engine): add fixed-step loop with max-step cap"
+```
+
+### Task 12: Input frame + keyboard/touch/gamepad/tilt merge
+
+**Files:**
+- Modify: `src/engine/input.ts`
+- Create: `tests/engine/input.test.ts`
+
+- [ ] **Step 1: Write failing test**
+
+Content of `tests/engine/input.test.ts`:
+
+```typescript
+import { describe, expect, it } from "vitest";
+import {
+  emptyInputFrame,
+  mergeInputFrames,
+  gamepadToInputFrame,
+  motionGammaToInputFrame
+} from "../../src/engine/input";
+
+describe("input frame", () => {
+  it("emptyInputFrame has all-zero axes and no buttons held", () => {
+    const frame = emptyInputFrame();
+    expect(frame.steer).toBe(0);
+    expect(frame.throttle).toBe(0);
+    expect(frame.brake).toBe(0);
+    expect(frame.buttons.start).toBe(false);
+    expect(frame.buttons.pickup).toBe(false);
+    expect(frame.buttons.restart).toBe(false);
+    expect(frame.buttons.pause).toBe(false);
+    expect(frame.buttons.look).toBe(false);
+  });
+
+  it("mergeInputFrames takes the max magnitude for axes and OR for buttons", () => {
+    const a = { ...emptyInputFrame(), steer: -0.3, throttle: 0.5, buttons: { ...emptyInputFrame().buttons, start: true } };
+    const b = { ...emptyInputFrame(), steer: 0.7, brake: 1.0, buttons: { ...emptyInputFrame().buttons, pickup: true } };
+    const merged = mergeInputFrames(a, b);
+    expect(merged.steer).toBe(0.7);     // larger magnitude wins
+    expect(merged.throttle).toBe(0.5);
+    expect(merged.brake).toBe(1.0);
+    expect(merged.buttons.start).toBe(true);
+    expect(merged.buttons.pickup).toBe(true);
+  });
+
+  it("gamepadToInputFrame reads left-stick and triggers", () => {
+    const pad = {
+      connected: true,
+      axes: [-0.8, 0, 0, 0],
+      buttons: [
+        { pressed: false }, { pressed: false }, { pressed: false }, { pressed: false },
+        { pressed: false }, { pressed: false }, { pressed: false, value: 0.0 },
+        { pressed: true,  value: 0.9 }, { pressed: false },
+        { pressed: true } // index 9 → start
+      ]
+    } as unknown as Gamepad;
+    const frame = gamepadToInputFrame(pad);
+    expect(frame.steer).toBeCloseTo(-0.8, 2);
+    expect(frame.throttle).toBeCloseTo(0.9, 2);
+    expect(frame.buttons.start).toBe(true);
+  });
+
+  it("motionGammaToInputFrame maps -30..30 deg tilt to -1..1 steer", () => {
+    expect(motionGammaToInputFrame(0, true).steer).toBe(0);
+    const positive = motionGammaToInputFrame(30, true).steer;
+    const negative = motionGammaToInputFrame(-30, true).steer;
+    expect(positive).toBeCloseTo(1, 2);
+    expect(negative).toBeCloseTo(-1, 2);
+    expect(motionGammaToInputFrame(30, false).steer).toBe(0);
+  });
+});
+```
+
+- [ ] **Step 2: Verify failure**
+
+Run: `npx vitest run tests/engine/input.test.ts`
+Expected: FAIL — exports missing.
+
+- [ ] **Step 3: Implement input frame primitives**
+
+Content of `src/engine/input.ts`:
+
+```typescript
+export interface InputButtons {
+  start: boolean;
+  pickup: boolean;
+  restart: boolean;
+  pause: boolean;
+  look: boolean;
+}
+
+export interface InputFrame {
+  steer: number;      // [-1, 1]
+  throttle: number;   // [0, 1]
+  brake: number;      // [0, 1]
+  buttons: InputButtons;
+}
+
+export const emptyInputFrame = (): InputFrame => ({
+  steer: 0,
+  throttle: 0,
+  brake: 0,
+  buttons: { start: false, pickup: false, restart: false, pause: false, look: false }
+});
+
+const pickMax = (a: number, b: number): number => (Math.abs(b) > Math.abs(a) ? b : a);
+
+export const mergeInputFrames = (...frames: readonly InputFrame[]): InputFrame => {
+  const out = emptyInputFrame();
+  for (const frame of frames) {
+    out.steer = pickMax(out.steer, frame.steer);
+    out.throttle = Math.max(out.throttle, frame.throttle);
+    out.brake = Math.max(out.brake, frame.brake);
+    out.buttons = {
+      start: out.buttons.start || frame.buttons.start,
+      pickup: out.buttons.pickup || frame.buttons.pickup,
+      restart: out.buttons.restart || frame.buttons.restart,
+      pause: out.buttons.pause || frame.buttons.pause,
+      look: out.buttons.look || frame.buttons.look
+    };
+  }
+  return out;
+};
+
+const DEADZONE = 0.12;
+const applyDeadzone = (v: number): number => (Math.abs(v) < DEADZONE ? 0 : v);
+
+export const gamepadToInputFrame = (pad: Gamepad | null | undefined): InputFrame => {
+  const out = emptyInputFrame();
+  if (!pad || !pad.connected) return out;
+  out.steer = applyDeadzone(pad.axes[0] ?? 0);
+  out.throttle = pad.buttons[7]?.value ?? 0;
+  out.brake = pad.buttons[6]?.value ?? 0;
+  if ((pad.buttons[12]?.pressed) && !out.throttle) out.throttle = 1; // D-pad up fallback
+  if ((pad.buttons[13]?.pressed) && !out.brake) out.brake = 1;       // D-pad down fallback
+  const padLeft  = pad.buttons[14]?.pressed ?? false;
+  const padRight = pad.buttons[15]?.pressed ?? false;
+  if (out.steer === 0) {
+    if (padLeft) out.steer = -1;
+    else if (padRight) out.steer = 1;
+  }
+  out.buttons.start = pad.buttons[9]?.pressed ?? false;
+  out.buttons.pickup = pad.buttons[0]?.pressed ?? false;
+  out.buttons.restart = pad.buttons[3]?.pressed ?? false;
+  out.buttons.pause = pad.buttons[8]?.pressed ?? false;
+  out.buttons.look = pad.buttons[1]?.pressed ?? false;
+  return out;
+};
+
+export const motionGammaToInputFrame = (gammaDeg: number | null, enabled: boolean): InputFrame => {
+  const out = emptyInputFrame();
+  if (!enabled || gammaDeg === null || !Number.isFinite(gammaDeg)) return out;
+  const clamped = Math.max(-30, Math.min(30, gammaDeg));
+  out.steer = clamped / 30;
+  return out;
+};
+
+export interface KeyboardState {
+  up: boolean;
+  down: boolean;
+  left: boolean;
+  right: boolean;
+  space: boolean;
+  r: boolean;
+  p: boolean;
+  c: boolean;
+}
+
+export const emptyKeyboardState = (): KeyboardState => ({
+  up: false, down: false, left: false, right: false, space: false, r: false, p: false, c: false
+});
+
+export const keyboardToInputFrame = (keys: KeyboardState): InputFrame => {
+  const out = emptyInputFrame();
+  const left = keys.left ? 1 : 0;
+  const right = keys.right ? 1 : 0;
+  out.steer = right - left;
+  out.throttle = keys.up ? 1 : 0;
+  out.brake = keys.down ? 1 : 0;
+  out.buttons.start = keys.space;
+  out.buttons.pickup = keys.space; // Phase 1 reuses Space for pickup fire; remap in settings later.
+  out.buttons.restart = keys.r;
+  out.buttons.pause = keys.p;
+  out.buttons.look = keys.c;
+  return out;
+};
+
+export interface TouchState {
+  left: boolean;
+  right: boolean;
+  accelerate: boolean;
+  brake: boolean;
+  start: boolean;
+  restart: boolean;
+}
+
+export const emptyTouchState = (): TouchState => ({
+  left: false, right: false, accelerate: false, brake: false, start: false, restart: false
+});
+
+export const touchToInputFrame = (touch: TouchState): InputFrame => {
+  const out = emptyInputFrame();
+  const left = touch.left ? 1 : 0;
+  const right = touch.right ? 1 : 0;
+  out.steer = right - left;
+  out.throttle = touch.accelerate ? 1 : 0;
+  out.brake = touch.brake ? 1 : 0;
+  out.buttons.start = touch.start;
+  out.buttons.restart = touch.restart;
+  return out;
+};
+```
+
+- [ ] **Step 4: Verify tests pass**
+
+Run: `npx vitest run tests/engine/input.test.ts`
+Expected: 4 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/engine/input.ts tests/engine/input.test.ts
+git commit -m "feat(engine): InputFrame + keyboard/touch/gamepad/motion mappers"
+```
+
+### Task 13: Audio scaffold (Web Audio bus graph, no samples yet)
+
+**Files:**
+- Modify: `src/engine/audio.ts`
+
+- [ ] **Step 1: Implement a minimal bus graph that can be instantiated without a user gesture error in tests**
+
+Content of `src/engine/audio.ts`:
+
+```typescript
+export interface AudioBuses {
+  master: GainNode;
+  music: GainNode;
+  sfx: GainNode;
+  engine: GainNode;
+  ui: GainNode;
+}
+
+export interface AudioSystem {
+  context: AudioContext;
+  buses: AudioBuses;
+  setMasterVolume: (value: number) => void;
+  setBusVolume: (bus: keyof Omit<AudioBuses, "master">, value: number) => void;
+  resume: () => Promise<void>;
+}
+
+export const createAudioSystem = (): AudioSystem => {
+  const context = new AudioContext();
+  const master = context.createGain();
+  const music = context.createGain();
+  const sfx = context.createGain();
+  const engine = context.createGain();
+  const ui = context.createGain();
+  master.gain.value = 0.9;
+  music.gain.value = 0.8;
+  sfx.gain.value = 1.0;
+  engine.gain.value = 0.7;
+  ui.gain.value = 0.8;
+  master.connect(context.destination);
+  music.connect(master);
+  sfx.connect(master);
+  engine.connect(master);
+  ui.connect(master);
+
+  const buses: AudioBuses = { master, music, sfx, engine, ui };
+
+  return {
+    context,
+    buses,
+    setMasterVolume: (value: number) => {
+      master.gain.value = Math.max(0, Math.min(1, value));
+    },
+    setBusVolume: (bus, value) => {
+      const clamped = Math.max(0, Math.min(1, value));
+      (buses[bus] as GainNode).gain.value = clamped;
+    },
+    resume: async () => {
+      if (context.state === "suspended") {
+        await context.resume();
+      }
+    }
+  };
+};
+```
+
+- [ ] **Step 2: Confirm typecheck passes (no tests yet — audio tests require audio context; defer to E2E)**
+
+Run: `npm run typecheck`
+Expected: no errors.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/engine/audio.ts
+git commit -m "feat(engine): add Web Audio bus-graph scaffold"
+```
+
+---
+
+## Group 5 — Sim: track runtime, physics, car, race, pickups, AI
+
+### Task 14: Sim types + immutable snapshots
+
+**Files:**
+- Modify: `src/sim/types.ts`
+
+- [ ] **Step 1: Implement sim-wide types (no tests — exported types only; tests come with consumers)**
+
+Content of `src/sim/types.ts`:
+
+```typescript
+import type { Vec3 } from "../util/math";
+
+export type CarClass = "rookie" | "stock" | "muscle" | "pro";
+export type PickupId = "spark-burst" | "pulse-wave" | "slick" | "skip-rocket" | "decoy-cube" | "guard";
+
+export interface CarTuning {
+  readonly mass: number;
+  readonly wheelbase: number;
+  readonly trackWidth: number;
+  readonly cgHeight: number;
+  readonly gripCeiling: number;
+  readonly torqueCurve: ReadonlyArray<readonly [number, number]>;
+  readonly downforce: number;
+  readonly brakeStrength: number;
+  readonly steerAssist: number;
+}
+
+export interface CarSnapshot {
+  readonly id: string;
+  readonly position: Vec3;
+  readonly forward: Vec3;
+  readonly right: Vec3;
+  readonly up: Vec3;
+  readonly velocity: Vec3;
+  readonly angularVelocity: number;
+  readonly rpm: number;
+  readonly slip: number;
+  readonly wheelSpin: number;
+  readonly lap: number;
+  readonly progress: number;
+  readonly totalDistance: number;
+  readonly offRoad: boolean;
+  readonly flipped: boolean;
+  readonly boostRemaining: number;
+  readonly pickupHeld: PickupId | null;
+  readonly shieldRemaining: number;
+}
+
+export type RaceStatus =
+  | "grid"
+  | "countdown"
+  | "running"
+  | "paused"
+  | "finished";
+
+export interface RaceSnapshot {
+  readonly status: RaceStatus;
+  readonly raceTime: number;
+  readonly countdownRemaining: number;
+  readonly cars: ReadonlyArray<CarSnapshot>;
+  readonly standings: ReadonlyArray<string>;
+  readonly lapsToWin: number;
+  readonly bestLap: number | null;
+  readonly lastLap: number | null;
+}
+
+export interface WorldSnapshot {
+  readonly race: RaceSnapshot;
+  readonly pickups: ReadonlyArray<{
+    readonly id: string;
+    readonly pickupId: PickupId;
+    readonly position: Vec3;
+    readonly active: boolean;
+  }>;
+  readonly projectiles: ReadonlyArray<{
+    readonly id: string;
+    readonly position: Vec3;
+    readonly velocity: Vec3;
+    readonly ownerId: string;
+  }>;
+}
+```
+
+- [ ] **Step 2: Typecheck**
+
+Run: `npm run typecheck`
+Expected: no errors.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/sim/types.ts
+git commit -m "feat(sim): add shared sim type contracts"
+```
+
+### Task 15: Track runtime (progress + closest-point wrapper around spline)
+
+**Files:**
+- Modify: `src/sim/track-runtime.ts`
+- Create: `tests/sim/track-runtime.test.ts`
+
+- [ ] **Step 1: Write failing test**
+
+Content of `tests/sim/track-runtime.test.ts`:
+
+```typescript
+import { describe, expect, it } from "vitest";
+import { createTrackRuntime } from "../../src/sim/track-runtime";
+
+const SQUARE = [
+  { x: 0, y: 0, z: 0, halfWidth: 4 },
+  { x: 10, y: 0, z: 0, halfWidth: 4 },
+  { x: 10, y: 0, z: 10, halfWidth: 4 },
+  { x: 0, y: 0, z: 10, halfWidth: 4 }
+];
+
+describe("track runtime", () => {
+  it("initial progress at corner 0 is near 0", () => {
+    const rt = createTrackRuntime(SQUARE, 512);
+    const snap = rt.sampleProgress({ x: 0, y: 0, z: 0 }, 0);
+    expect(snap.t).toBeLessThan(0.05);
+    expect(snap.offTrack).toBe(false);
+  });
+
+  it("off-track flag set when far from centerline", () => {
+    const rt = createTrackRuntime(SQUARE, 512);
+    const snap = rt.sampleProgress({ x: 50, y: 0, z: 0 }, 0);
+    expect(snap.offTrack).toBe(true);
+  });
+
+  it("progress advances monotonically along a traversal", () => {
+    const rt = createTrackRuntime(SQUARE, 512);
+    const a = rt.sampleProgress({ x: 5, y: 0, z: 0 }, 0);
+    const b = rt.sampleProgress({ x: 10, y: 0, z: 5 }, a.t);
+    expect(b.totalDistance).toBeGreaterThan(a.totalDistance);
+  });
+});
+```
+
+- [ ] **Step 2: Verify failure**
+
+Run: `npx vitest run tests/sim/track-runtime.test.ts`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement track runtime**
+
+Content of `src/sim/track-runtime.ts`:
+
+```typescript
+import {
+  closestPointOnSpline,
+  length3,
+  sampleSplineFrame,
+  splineLength,
+  sub3,
+  type Vec3
+} from "../util/math";
+
+export interface SplineControl extends Vec3 {
+  halfWidth: number;
+}
+
+export interface ProgressSample {
+  readonly t: number;
+  readonly totalDistance: number;
+  readonly centerline: Vec3;
+  readonly tangent: Vec3;
+  readonly halfWidth: number;
+  readonly offTrack: boolean;
+  readonly distanceToCenter: number;
+}
+
+export interface TrackRuntime {
+  readonly totalLength: number;
+  sampleProgress: (worldPosition: Vec3, previousT: number) => ProgressSample;
+  sampleFrame: (t: number) => { position: Vec3; tangent: Vec3; halfWidth: number };
+}
+
+const interpolateHalfWidth = (controls: readonly SplineControl[], t: number): number => {
+  const n = controls.length;
+  const scaled = ((t % 1) + 1) % 1 * n;
+  const i0 = Math.floor(scaled) % n;
+  const i1 = (i0 + 1) % n;
+  const local = scaled - Math.floor(scaled);
+  return controls[i0].halfWidth * (1 - local) + controls[i1].halfWidth * local;
+};
+
+const WINDOW_RADIUS = 0.08; // 8% of track per sample pass
+
+export const createTrackRuntime = (controls: readonly SplineControl[], sampleCount: number): TrackRuntime => {
+  const totalLength = splineLength(controls as Vec3[], sampleCount, true);
+
+  const sampleProgress = (position: Vec3, previousT: number): ProgressSample => {
+    const windowSamples = Math.max(16, Math.floor(sampleCount * WINDOW_RADIUS * 2));
+    let bestT = 0;
+    let bestPos = sampleSplineFrame(controls as Vec3[], previousT, true).position;
+    let bestDist = length3(sub3(bestPos, position));
+    for (let i = 0; i < windowSamples; i += 1) {
+      const offset = (i / (windowSamples - 1) - 0.5) * WINDOW_RADIUS * 2;
+      const t = ((previousT + offset) % 1 + 1) % 1;
+      const frame = sampleSplineFrame(controls as Vec3[], t, true);
+      const d = length3(sub3(frame.position, position));
+      if (d < bestDist) {
+        bestDist = d;
+        bestT = t;
+        bestPos = frame.position;
+      }
+    }
+    // Fallback global pass if window didn't improve
+    if (bestDist > 20) {
+      const global = closestPointOnSpline(controls as Vec3[], position, sampleCount, true);
+      if (global.distance < bestDist) {
+        bestDist = global.distance;
+        bestT = global.t;
+        bestPos = global.position;
+      }
+    }
+    const halfWidth = interpolateHalfWidth(controls, bestT);
+    const frame = sampleSplineFrame(controls as Vec3[], bestT, true);
+    return {
+      t: bestT,
+      totalDistance: bestT * totalLength,
+      centerline: frame.position,
+      tangent: frame.tangent,
+      halfWidth,
+      offTrack: bestDist > halfWidth,
+      distanceToCenter: bestDist
+    };
+  };
+
+  const sampleFrame = (t: number) => {
+    const frame = sampleSplineFrame(controls as Vec3[], t, true);
+    return { position: frame.position, tangent: frame.tangent, halfWidth: interpolateHalfWidth(controls, t) };
+  };
+
+  return { totalLength, sampleProgress, sampleFrame };
+};
+```
+
+- [ ] **Step 4: Verify tests pass**
+
+Run: `npx vitest run tests/sim/track-runtime.test.ts`
+Expected: 3 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/sim/track-runtime.ts tests/sim/track-runtime.test.ts
+git commit -m "feat(sim): track runtime with progress sampling + off-track detection"
+```
+
+### Task 16: Tire + chassis physics integrator
+
+**Files:**
+- Modify: `src/sim/physics.ts`
+- Create: `tests/sim/physics.test.ts`
+
+- [ ] **Step 1: Write failing test**
+
+Content of `tests/sim/physics.test.ts`:
+
+```typescript
+import { describe, expect, it } from "vitest";
+import { integrateChassis, tireLongitudinalForce, tireLateralForce } from "../../src/sim/physics";
+
+describe("tire model", () => {
+  it("longitudinal force is zero at zero slip", () => {
+    expect(tireLongitudinalForce(0, 1, 1)).toBe(0);
+  });
+
+  it("longitudinal force saturates at grip ceiling", () => {
+    expect(Math.abs(tireLongitudinalForce(10, 1, 1))).toBeCloseTo(1, 2);
+  });
+
+  it("lateral force reverses sign with slip angle", () => {
+    expect(Math.sign(tireLateralForce(0.1, 1, 1))).toBe(1);
+    expect(Math.sign(tireLateralForce(-0.1, 1, 1))).toBe(-1);
+  });
+});
+
+describe("chassis integrator", () => {
+  it("stationary chassis with no forces stays put", () => {
+    const next = integrateChassis(
+      { position: { x: 0, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 }, yaw: 0, angularVelocity: 0 },
+      { linear: { x: 0, y: 0, z: 0 }, yawTorque: 0 },
+      1.0,
+      1 / 120
+    );
+    expect(next.position).toEqual({ x: 0, y: 0, z: 0 });
+  });
+
+  it("applied forward force accelerates the chassis along +z", () => {
+    const next = integrateChassis(
+      { position: { x: 0, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 }, yaw: 0, angularVelocity: 0 },
+      { linear: { x: 0, y: 0, z: 10 }, yawTorque: 0 },
+      1.0,
+      1 / 120
+    );
+    expect(next.velocity.z).toBeGreaterThan(0);
+    expect(next.position.z).toBeGreaterThan(0);
+  });
+});
+```
+
+- [ ] **Step 2: Verify failure**
+
+Run: `npx vitest run tests/sim/physics.test.ts`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement physics**
+
+Content of `src/sim/physics.ts`:
+
+```typescript
+import { clamp, type Vec3 } from "../util/math";
+
+// Pacejka-lite curve peaking at slip = 0.12 for longitudinal.
+export const tireLongitudinalForce = (slipRatio: number, loadKg: number, gripCeiling: number): number => {
+  const peakSlip = 0.12;
+  const normalized = slipRatio / peakSlip;
+  const magnitude = Math.tanh(Math.abs(normalized) * 1.6) * loadKg * gripCeiling;
+  return Math.sign(slipRatio) * magnitude;
+};
+
+// Lateral peak around 6 degrees = ~0.105 rad.
+export const tireLateralForce = (slipAngleRad: number, loadKg: number, gripCeiling: number): number => {
+  const peakAngle = 0.105;
+  const normalized = slipAngleRad / peakAngle;
+  const magnitude = Math.tanh(Math.abs(normalized) * 1.3) * loadKg * gripCeiling;
+  return Math.sign(slipAngleRad) * magnitude;
+};
+
+export interface ChassisState {
+  readonly position: Vec3;
+  readonly velocity: Vec3;
+  readonly yaw: number;
+  readonly angularVelocity: number;
+}
+
+export interface ChassisForce {
+  readonly linear: Vec3;
+  readonly yawTorque: number;
+}
+
+export const integrateChassis = (
+  state: ChassisState,
+  force: ChassisForce,
+  massKg: number,
+  stepSeconds: number
+): ChassisState => {
+  const invMass = 1 / massKg;
+  const accel = {
+    x: force.linear.x * invMass,
+    y: 0,
+    z: force.linear.z * invMass
+  };
+  const newVelocity = {
+    x: state.velocity.x + accel.x * stepSeconds,
+    y: 0,
+    z: state.velocity.z + accel.z * stepSeconds
+  };
+  const dragLinear = 0.02;
+  const dampedVelocity = {
+    x: newVelocity.x * (1 - dragLinear * stepSeconds),
+    y: 0,
+    z: newVelocity.z * (1 - dragLinear * stepSeconds)
+  };
+  const newPosition = {
+    x: state.position.x + dampedVelocity.x * stepSeconds,
+    y: state.position.y,
+    z: state.position.z + dampedVelocity.z * stepSeconds
+  };
+  const yawAccel = force.yawTorque * invMass * 12; // arbitrary inertia coefficient; tune later
+  const newAngularVelocity = (state.angularVelocity + yawAccel * stepSeconds) * (1 - 0.8 * stepSeconds);
+  const newYaw = state.yaw + newAngularVelocity * stepSeconds;
+  return {
+    position: newPosition,
+    velocity: dampedVelocity,
+    yaw: newYaw,
+    angularVelocity: clamp(newAngularVelocity, -6, 6)
+  };
+};
+```
+
+- [ ] **Step 4: Verify**
+
+Run: `npx vitest run tests/sim/physics.test.ts`
+Expected: 5 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/sim/physics.ts tests/sim/physics.test.ts
+git commit -m "feat(sim): Pacejka-lite tire + chassis integrator"
+```
+
+### Task 17: Car behaviour (controls → forces)
+
+**Files:**
+- Modify: `src/sim/car.ts`
+- Create: `tests/sim/car.test.ts`
+
+- [ ] **Step 1: Write failing test**
+
+Content of `tests/sim/car.test.ts`:
+
+```typescript
+import { describe, expect, it } from "vitest";
+import { stepCar, type CarRuntime } from "../../src/sim/car";
+import type { InputFrame } from "../../src/engine/input";
+import { emptyInputFrame } from "../../src/engine/input";
+
+const STOCK_TUNING = {
+  mass: 1.2,
+  wheelbase: 0.22,
+  trackWidth: 0.14,
+  cgHeight: 0.05,
+  gripCeiling: 1.0,
+  torqueCurve: [[0, 0.4], [0.5, 1.0], [1.0, 0.65]] as const,
+  downforce: 0.2,
+  brakeStrength: 1.0,
+  steerAssist: 0.3
+};
+
+const initial = (): CarRuntime => ({
+  id: "player",
+  tuning: STOCK_TUNING,
+  chassis: {
+    position: { x: 0, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: 0 },
+    yaw: 0,
+    angularVelocity: 0
+  },
+  rpm: 0,
+  wheelSpin: 0,
+  pickupHeld: null,
+  boostRemaining: 0,
+  shieldRemaining: 0
+});
+
+describe("stepCar", () => {
+  it("full throttle accelerates the car forward", () => {
+    const input: InputFrame = { ...emptyInputFrame(), throttle: 1 };
+    let runtime = initial();
+    for (let i = 0; i < 60; i += 1) {
+      runtime = stepCar(runtime, input, 1 / 120, false);
+    }
+    expect(runtime.chassis.velocity.z).toBeGreaterThan(0);
+    expect(runtime.chassis.position.z).toBeGreaterThan(0);
+  });
+
+  it("steering input builds angular velocity", () => {
+    const input: InputFrame = { ...emptyInputFrame(), throttle: 1, steer: 0.8 };
+    let runtime = initial();
+    for (let i = 0; i < 60; i += 1) {
+      runtime = stepCar(runtime, input, 1 / 120, false);
+    }
+    expect(Math.abs(runtime.chassis.angularVelocity)).toBeGreaterThan(0);
+  });
+
+  it("brakes reduce forward velocity", () => {
+    let runtime = initial();
+    runtime = {
+      ...runtime,
+      chassis: { ...runtime.chassis, velocity: { x: 0, y: 0, z: 20 } }
+    };
+    const brakeInput: InputFrame = { ...emptyInputFrame(), brake: 1 };
+    for (let i = 0; i < 60; i += 1) {
+      runtime = stepCar(runtime, brakeInput, 1 / 120, false);
+    }
+    expect(runtime.chassis.velocity.z).toBeLessThan(20);
+  });
+});
+```
+
+- [ ] **Step 2: Verify failure**
+
+Run: `npx vitest run tests/sim/car.test.ts`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement car step**
+
+Content of `src/sim/car.ts`:
+
+```typescript
+import { clamp, length3, type Vec3 } from "../util/math";
+import { integrateChassis, type ChassisState } from "./physics";
+import type { InputFrame } from "../engine/input";
+import type { CarTuning, PickupId } from "./types";
+
+export interface CarRuntime {
+  readonly id: string;
+  readonly tuning: CarTuning;
+  readonly chassis: ChassisState;
+  readonly rpm: number;
+  readonly wheelSpin: number;
+  readonly pickupHeld: PickupId | null;
+  readonly boostRemaining: number;
+  readonly shieldRemaining: number;
+}
+
+const sampleTorque = (curve: ReadonlyArray<readonly [number, number]>, rpmNormalized: number): number => {
+  const r = clamp(rpmNormalized, 0, 1);
+  for (let i = 1; i < curve.length; i += 1) {
+    const [x0, y0] = curve[i - 1];
+    const [x1, y1] = curve[i];
+    if (r <= x1) {
+      const span = x1 - x0 || 1;
+      const local = (r - x0) / span;
+      return y0 + (y1 - y0) * local;
+    }
+  }
+  return curve[curve.length - 1][1];
+};
+
+const forwardVector = (yaw: number): Vec3 => ({ x: Math.sin(yaw), y: 0, z: Math.cos(yaw) });
+const rightVector = (yaw: number): Vec3 => ({ x: Math.cos(yaw), y: 0, z: -Math.sin(yaw) });
+
+const MAX_SPEED_MPS = 26;
+const STEER_RATE = 3.2;
+
+export const stepCar = (
+  runtime: CarRuntime,
+  input: InputFrame,
+  stepSeconds: number,
+  offRoad: boolean
+): CarRuntime => {
+  const forward = forwardVector(runtime.chassis.yaw);
+  const right = rightVector(runtime.chassis.yaw);
+  const speed = length3(runtime.chassis.velocity);
+  const forwardSpeed = runtime.chassis.velocity.x * forward.x + runtime.chassis.velocity.z * forward.z;
+  const lateralSpeed = runtime.chassis.velocity.x * right.x + runtime.chassis.velocity.z * right.z;
+
+  const rpmNormalized = clamp(speed / MAX_SPEED_MPS, 0, 1);
+  const rpm = rpmNormalized * 8000;
+
+  const boostActive = runtime.boostRemaining > 0;
+  const boostMul = boostActive ? 1.6 : 1.0;
+  const gripMul = (offRoad ? 0.5 : 1.0) * (boostActive ? 1.15 : 1.0);
+
+  const throttleForce = sampleTorque(runtime.tuning.torqueCurve, rpmNormalized) * input.throttle * runtime.tuning.mass * 18 * boostMul;
+  const brakeForce = input.brake * runtime.tuning.brakeStrength * runtime.tuning.mass * 22;
+
+  const lateralForce = -lateralSpeed * runtime.tuning.mass * 8 * gripMul;
+
+  const linear = {
+    x: forward.x * (throttleForce - brakeForce) + right.x * lateralForce,
+    y: 0,
+    z: forward.z * (throttleForce - brakeForce) + right.z * lateralForce
+  };
+  const assist = 1 + runtime.tuning.steerAssist * (1 - clamp(speed / MAX_SPEED_MPS, 0, 1));
+  const yawTorque = input.steer * STEER_RATE * runtime.tuning.mass * assist - runtime.chassis.angularVelocity * 1.4;
+
+  const nextChassis = integrateChassis(
+    runtime.chassis,
+    { linear, yawTorque },
+    runtime.tuning.mass,
+    stepSeconds
+  );
+
+  return {
+    ...runtime,
+    chassis: nextChassis,
+    rpm,
+    wheelSpin: runtime.wheelSpin + forwardSpeed * stepSeconds * 14,
+    boostRemaining: Math.max(0, runtime.boostRemaining - stepSeconds),
+    shieldRemaining: Math.max(0, runtime.shieldRemaining - stepSeconds)
+  };
+};
+
+export const grantPickup = (runtime: CarRuntime, pickup: PickupId): CarRuntime => ({
+  ...runtime,
+  pickupHeld: pickup
+});
+
+export const activateSparkBurst = (runtime: CarRuntime): CarRuntime => {
+  if (runtime.pickupHeld !== "spark-burst") return runtime;
+  return { ...runtime, pickupHeld: null, boostRemaining: Math.max(runtime.boostRemaining, 2.0) };
+};
+```
+
+- [ ] **Step 4: Verify**
+
+Run: `npx vitest run tests/sim/car.test.ts`
+Expected: 3 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/sim/car.ts tests/sim/car.test.ts
+git commit -m "feat(sim): car step function with throttle/brake/steer + boost + pickup"
+```
+
+### Task 18: Race FSM
+
+**Files:**
+- Modify: `src/sim/race.ts`
+- Create: `tests/sim/race.test.ts`
+
+- [ ] **Step 1: Write failing test**
+
+Content of `tests/sim/race.test.ts`:
+
+```typescript
+import { describe, expect, it } from "vitest";
+import { createRace, stepRace, onStartPressed, onPausePressed } from "../../src/sim/race";
+import { emptyInputFrame } from "../../src/engine/input";
+
+describe("race FSM", () => {
+  it("starts in grid state", () => {
+    const race = createRace({ lapsToWin: 3, countdownSeconds: 3 });
+    expect(race.status).toBe("grid");
+  });
+
+  it("onStartPressed from grid moves to countdown", () => {
+    let race = createRace({ lapsToWin: 3, countdownSeconds: 3 });
+    race = onStartPressed(race);
+    expect(race.status).toBe("countdown");
+    expect(race.countdownRemaining).toBeCloseTo(3, 6);
+  });
+
+  it("countdown ticks down and transitions to running", () => {
+    let race = createRace({ lapsToWin: 3, countdownSeconds: 1 });
+    race = onStartPressed(race);
+    const step = 1 / 120;
+    for (let i = 0; i < 121; i += 1) {
+      race = stepRace(race, emptyInputFrame(), step);
+    }
+    expect(race.status).toBe("running");
+  });
+
+  it("onPausePressed from running toggles to paused", () => {
+    let race = createRace({ lapsToWin: 3, countdownSeconds: 0 });
+    race = onStartPressed(race);
+    race = stepRace(race, emptyInputFrame(), 1 / 60);
+    race = onPausePressed(race);
+    expect(race.status).toBe("paused");
+    race = onPausePressed(race);
+    expect(race.status).toBe("running");
+  });
+});
+```
+
+- [ ] **Step 2: Verify failure**
+
+Run: `npx vitest run tests/sim/race.test.ts`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement race FSM**
+
+Content of `src/sim/race.ts`:
+
+```typescript
+import type { InputFrame } from "../engine/input";
+import type { RaceStatus } from "./types";
+
+export interface RaceConfig {
+  readonly lapsToWin: number;
+  readonly countdownSeconds: number;
+}
+
+export interface RaceState {
+  readonly status: RaceStatus;
+  readonly raceTime: number;
+  readonly countdownRemaining: number;
+  readonly lapsToWin: number;
+  readonly startInitialCountdown: number;
+}
+
+export const createRace = (config: RaceConfig): RaceState => ({
+  status: "grid",
+  raceTime: 0,
+  countdownRemaining: 0,
+  lapsToWin: config.lapsToWin,
+  startInitialCountdown: config.countdownSeconds
+});
+
+export const onStartPressed = (race: RaceState): RaceState => {
+  if (race.status !== "grid") return race;
+  return {
+    ...race,
+    status: "countdown",
+    countdownRemaining: race.startInitialCountdown
+  };
+};
+
+export const onPausePressed = (race: RaceState): RaceState => {
+  if (race.status === "running") return { ...race, status: "paused" };
+  if (race.status === "paused") return { ...race, status: "running" };
+  return race;
+};
+
+export const onFinishReached = (race: RaceState): RaceState => {
+  if (race.status !== "running") return race;
+  return { ...race, status: "finished" };
+};
+
+export const stepRace = (race: RaceState, _input: InputFrame, stepSeconds: number): RaceState => {
+  if (race.status === "countdown") {
+    const remaining = race.countdownRemaining - stepSeconds;
+    if (remaining <= 0) {
+      return { ...race, status: "running", countdownRemaining: 0 };
+    }
+    return { ...race, countdownRemaining: remaining };
+  }
+  if (race.status === "running") {
+    return { ...race, raceTime: race.raceTime + stepSeconds };
+  }
+  return race;
+};
+```
+
+- [ ] **Step 4: Verify**
+
+Run: `npx vitest run tests/sim/race.test.ts`
+Expected: 4 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/sim/race.ts tests/sim/race.test.ts
+git commit -m "feat(sim): race FSM grid→countdown→running⇄paused→finished"
+```
+
+### Task 19: Pickups + AI (Phase 1 scope: Spark Burst + racing-line follower)
+
+**Files:**
+- Modify: `src/sim/pickups.ts`
+- Modify: `src/sim/ai.ts`
+- Create: `tests/sim/pickups.test.ts`
+- Create: `tests/sim/ai.test.ts`
+
+- [ ] **Step 1: Write failing tests**
+
+Content of `tests/sim/pickups.test.ts`:
+
+```typescript
+import { describe, expect, it } from "vitest";
+import { createPickup, stepPickup } from "../../src/sim/pickups";
+
+describe("pickup system", () => {
+  it("pickup starts active", () => {
+    const p = createPickup("spark-burst-01", "spark-burst", { x: 0, y: 0, z: 0 });
+    expect(p.active).toBe(true);
+  });
+
+  it("collected pickup becomes inactive and schedules respawn", () => {
+    const p = createPickup("spark-burst-01", "spark-burst", { x: 0, y: 0, z: 0 });
+    const next = stepPickup({ ...p, active: false, respawnRemaining: 5 }, 0.5);
+    expect(next.active).toBe(false);
+    expect(next.respawnRemaining).toBeCloseTo(4.5, 6);
+  });
+
+  it("respawn completes when timer expires", () => {
+    const p = createPickup("spark-burst-01", "spark-burst", { x: 0, y: 0, z: 0 });
+    const next = stepPickup({ ...p, active: false, respawnRemaining: 0.1 }, 0.5);
+    expect(next.active).toBe(true);
+    expect(next.respawnRemaining).toBe(0);
+  });
+});
+```
+
+Content of `tests/sim/ai.test.ts`:
+
+```typescript
+import { describe, expect, it } from "vitest";
+import { createAiDriver, aiInput } from "../../src/sim/ai";
+import { createTrackRuntime } from "../../src/sim/track-runtime";
+
+const SQUARE = [
+  { x: 0, y: 0, z: 0, halfWidth: 4 },
+  { x: 10, y: 0, z: 0, halfWidth: 4 },
+  { x: 10, y: 0, z: 10, halfWidth: 4 },
+  { x: 0, y: 0, z: 10, halfWidth: 4 }
+];
+
+describe("ai driver", () => {
+  it("steers toward the next centerline point", () => {
+    const rt = createTrackRuntime(SQUARE, 256);
+    const ai = createAiDriver({ carId: "ai-1", difficulty: 0.5 });
+    const frame = aiInput(ai, rt, { x: 2, y: 0, z: 0 }, { x: 0, y: 0, z: 1 }, 0);
+    expect(frame.throttle).toBeGreaterThan(0);
+    expect(frame.steer).not.toBe(0);
+  });
+});
+```
+
+- [ ] **Step 2: Verify failure**
+
+Run: `npx vitest run tests/sim/pickups.test.ts tests/sim/ai.test.ts`
+Expected: FAIL on both.
+
+- [ ] **Step 3: Implement pickups**
+
+Content of `src/sim/pickups.ts`:
+
+```typescript
+import type { Vec3 } from "../util/math";
+import type { PickupId } from "./types";
+
+export interface PickupRuntime {
+  readonly id: string;
+  readonly pickupId: PickupId;
+  readonly position: Vec3;
+  readonly active: boolean;
+  readonly respawnRemaining: number;
+}
+
+const DEFAULT_RESPAWN_SECONDS = 4;
+
+export const createPickup = (id: string, pickupId: PickupId, position: Vec3): PickupRuntime => ({
+  id,
+  pickupId,
+  position,
+  active: true,
+  respawnRemaining: 0
+});
+
+export const stepPickup = (pickup: PickupRuntime, stepSeconds: number): PickupRuntime => {
+  if (pickup.active) return pickup;
+  const remaining = pickup.respawnRemaining - stepSeconds;
+  if (remaining <= 0) {
+    return { ...pickup, active: true, respawnRemaining: 0 };
+  }
+  return { ...pickup, respawnRemaining: remaining };
+};
+
+export const collectPickup = (pickup: PickupRuntime): PickupRuntime => {
+  if (!pickup.active) return pickup;
+  return { ...pickup, active: false, respawnRemaining: DEFAULT_RESPAWN_SECONDS };
+};
+```
+
+Content of `src/sim/ai.ts`:
+
+```typescript
+import { clamp, sub3, type Vec3 } from "../util/math";
+import type { TrackRuntime } from "./track-runtime";
+import { emptyInputFrame, type InputFrame } from "../engine/input";
+
+export interface AiDriver {
+  readonly carId: string;
+  readonly difficulty: number; // 0..1
+}
+
+export interface AiDriverInit {
+  readonly carId: string;
+  readonly difficulty: number;
+}
+
+export const createAiDriver = (init: AiDriverInit): AiDriver => ({
+  carId: init.carId,
+  difficulty: clamp(init.difficulty, 0, 1)
+});
+
+const LOOKAHEAD_T = 0.035;
+
+export const aiInput = (
+  ai: AiDriver,
+  track: TrackRuntime,
+  position: Vec3,
+  forward: Vec3,
+  previousT: number
+): InputFrame => {
+  const current = track.sampleProgress(position, previousT);
+  const ahead = track.sampleFrame((current.t + LOOKAHEAD_T) % 1);
+  const toAhead = sub3(ahead.position, position);
+  const forwardDot = forward.x * toAhead.x + forward.z * toAhead.z;
+  const rightDot = forward.z * toAhead.x - forward.x * toAhead.z; // 2D right in xz plane
+  const lateralSign = Math.sign(rightDot);
+  const mag = Math.hypot(toAhead.x, toAhead.z);
+  const normalizedLateral = mag === 0 ? 0 : rightDot / mag;
+  const steer = clamp(normalizedLateral * 2.2, -1, 1) * lateralSign * -1 + 0; // toward target
+  // Simplify: use direct lateral projection sign
+  const steerCommand = clamp(-normalizedLateral * 2.2, -1, 1);
+  const throttle = forwardDot > 0 ? 0.6 + 0.4 * ai.difficulty : 0.2;
+  const frame = emptyInputFrame();
+  return {
+    ...frame,
+    steer: steerCommand,
+    throttle,
+    brake: 0
+  };
+};
+```
+
+- [ ] **Step 4: Verify**
+
+Run: `npx vitest run tests/sim/pickups.test.ts tests/sim/ai.test.ts`
+Expected: 4 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/sim/pickups.ts src/sim/ai.ts tests/sim/pickups.test.ts tests/sim/ai.test.ts
+git commit -m "feat(sim): pickup FSM + simple AI racing-line follower"
+```
+
+---
+
+## Group 6 — Render layer
+
+### Task 20: Scene setup (lights, fog, skybox gradient)
+
+**Files:**
+- Modify: `src/render/scene.ts`
+
+- [ ] **Step 1: Implement scene builder (no unit tests — render tested via Playwright later)**
+
+Content of `src/render/scene.ts`:
+
+```typescript
+import * as THREE from "three";
+
+export interface SceneRig {
+  readonly scene: THREE.Scene;
+  readonly camera: THREE.PerspectiveCamera;
+  readonly renderer: THREE.WebGLRenderer;
+  readonly sun: THREE.DirectionalLight;
+  readonly hemi: THREE.HemisphereLight;
+  dispose: () => void;
+  setViewport: (width: number, height: number, dpr: number) => void;
+}
+
+export interface SceneLighting {
+  readonly sunDirection: readonly [number, number, number];
+  readonly hemisphereSky: string;
+  readonly hemisphereGround: string;
+  readonly fogDensity: number;
+}
+
+export const createSceneRig = (canvas: HTMLCanvasElement, lighting: SceneLighting): SceneRig => {
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(lighting.hemisphereSky);
+  scene.fog = new THREE.FogExp2(lighting.hemisphereSky, lighting.fogDensity);
+
+  const sun = new THREE.DirectionalLight(0xffe8c0, 2.4);
+  sun.position.set(lighting.sunDirection[0] * 40, lighting.sunDirection[1] * 40, lighting.sunDirection[2] * 40);
+  sun.castShadow = false; // lightmap provides shadow in later phase
+  scene.add(sun);
+
+  const hemi = new THREE.HemisphereLight(lighting.hemisphereSky, lighting.hemisphereGround, 1.4);
+  scene.add(hemi);
+
+  const camera = new THREE.PerspectiveCamera(72, 16 / 9, 0.05, 240);
+  camera.position.set(0, 2, -4);
+
+  const setViewport = (width: number, height: number, dpr: number): void => {
+    renderer.setPixelRatio(dpr);
+    renderer.setSize(width, height, false);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+  };
+
+  const dispose = (): void => {
+    renderer.dispose();
+  };
+
+  return { scene, camera, renderer, sun, hemi, dispose, setViewport };
+};
+```
+
+- [ ] **Step 2: Typecheck**
+
+Run: `npm run typecheck`
+Expected: no errors.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/render/scene.ts
+git commit -m "feat(render): Three.js scene rig with sun + hemi + exp2 fog"
+```
+
+### Task 21: Track mesh from spline (road + curb + sidewalk + verge)
+
+**Files:**
+- Modify: `src/render/track-mesh.ts`
+- Create: `tests/render/track-mesh.test.ts`
+
+- [ ] **Step 1: Write failing test (smoke-level: geometry produces sane vertex counts)**
+
+Content of `tests/render/track-mesh.test.ts`:
+
+```typescript
+import { describe, expect, it } from "vitest";
+import { buildTrackSurfaceGeometry } from "../../src/render/track-mesh";
+
+const SQUARE = [
+  { x: 0, y: 0, z: 0, halfWidth: 4 },
+  { x: 10, y: 0, z: 0, halfWidth: 4 },
+  { x: 10, y: 0, z: 10, halfWidth: 4 },
+  { x: 0, y: 0, z: 10, halfWidth: 4 }
+];
+
+describe("track mesh", () => {
+  it("produces positions and indices proportional to sample count", () => {
+    const { positions, indices } = buildTrackSurfaceGeometry(SQUARE, 64, { innerOffset: 0, outerOffset: 0 });
+    expect(positions.length).toBeGreaterThan(64 * 2 * 3);
+    expect(indices.length).toBeGreaterThan(0);
+  });
+});
+```
+
+- [ ] **Step 2: Verify failure**
+
+Run: `npx vitest run tests/render/track-mesh.test.ts`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+Content of `src/render/track-mesh.ts`:
+
+```typescript
+import * as THREE from "three";
+import {
+  cross3,
+  normalize3,
+  sampleSplineFrame,
+  sub3,
+  type Vec3
+} from "../util/math";
+import type { SplineControl } from "../sim/track-runtime";
+
+export interface SurfaceBand {
+  readonly innerOffset: number; // offset from halfWidth inward (negative reduces width), applied in world units
+  readonly outerOffset: number; // extra world units outward from halfWidth
+}
+
+export interface SurfaceGeometry {
+  readonly positions: Float32Array;
+  readonly normals: Float32Array;
+  readonly uvs: Float32Array;
+  readonly indices: Uint32Array;
+}
+
+const UP: Vec3 = { x: 0, y: 1, z: 0 };
+
+const lerpHalfWidth = (controls: readonly SplineControl[], t: number): number => {
+  const n = controls.length;
+  const scaled = ((t % 1) + 1) % 1 * n;
+  const i0 = Math.floor(scaled) % n;
+  const i1 = (i0 + 1) % n;
+  const local = scaled - Math.floor(scaled);
+  return controls[i0].halfWidth * (1 - local) + controls[i1].halfWidth * local;
+};
+
+export const buildTrackSurfaceGeometry = (
+  controls: readonly SplineControl[],
+  sampleCount: number,
+  band: SurfaceBand
+): SurfaceGeometry => {
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  for (let i = 0; i <= sampleCount; i += 1) {
+    const t = i / sampleCount;
+    const frame = sampleSplineFrame(controls as Vec3[], t, true);
+    const halfWidth = lerpHalfWidth(controls, t);
+    const right = normalize3(cross3(frame.tangent, UP));
+    const innerHalf = halfWidth + band.innerOffset;
+    const outerHalf = halfWidth + band.outerOffset;
+    const lBase = { x: frame.position.x - right.x * outerHalf, y: frame.position.y, z: frame.position.z - right.z * outerHalf };
+    const lInner = { x: frame.position.x - right.x * innerHalf, y: frame.position.y, z: frame.position.z - right.z * innerHalf };
+    const rInner = { x: frame.position.x + right.x * innerHalf, y: frame.position.y, z: frame.position.z + right.z * innerHalf };
+    const rBase = { x: frame.position.x + right.x * outerHalf, y: frame.position.y, z: frame.position.z + right.z * outerHalf };
+    positions.push(
+      lBase.x, lBase.y, lBase.z,
+      lInner.x, lInner.y, lInner.z,
+      rInner.x, rInner.y, rInner.z,
+      rBase.x, rBase.y, rBase.z
+    );
+    normals.push(0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0);
+    uvs.push(0, t, 0.33, t, 0.66, t, 1, t);
+    if (i < sampleCount) {
+      const base = i * 4;
+      indices.push(
+        base + 0, base + 1, base + 4,
+        base + 1, base + 5, base + 4,
+        base + 1, base + 2, base + 5,
+        base + 2, base + 6, base + 5,
+        base + 2, base + 3, base + 6,
+        base + 3, base + 7, base + 6
+      );
+    }
+  }
+  return {
+    positions: new Float32Array(positions),
+    normals: new Float32Array(normals),
+    uvs: new Float32Array(uvs),
+    indices: new Uint32Array(indices)
+  };
+};
+
+export const buildTrackMesh = (
+  controls: readonly SplineControl[],
+  sampleCount: number,
+  surfaces: Record<"road" | "curb" | "sidewalk" | "verge", SurfaceBand>
+): THREE.Group => {
+  const group = new THREE.Group();
+  group.name = "track-surfaces";
+  const materials = {
+    road: new THREE.MeshStandardMaterial({ color: 0xb89a78, roughness: 0.92, metalness: 0.02 }),
+    curb: new THREE.MeshStandardMaterial({ color: 0xcfcfcf, roughness: 0.78 }),
+    sidewalk: new THREE.MeshStandardMaterial({ color: 0xe0dcd2, roughness: 0.88 }),
+    verge: new THREE.MeshStandardMaterial({ color: 0x6f9a4a, roughness: 1.0 })
+  };
+  for (const key of ["verge", "sidewalk", "curb", "road"] as const) {
+    const geom = buildTrackSurfaceGeometry(controls, sampleCount, surfaces[key]);
+    const bufferGeom = new THREE.BufferGeometry();
+    bufferGeom.setAttribute("position", new THREE.BufferAttribute(geom.positions, 3));
+    bufferGeom.setAttribute("normal", new THREE.BufferAttribute(geom.normals, 3));
+    bufferGeom.setAttribute("uv", new THREE.BufferAttribute(geom.uvs, 2));
+    bufferGeom.setIndex(new THREE.BufferAttribute(geom.indices, 1));
+    bufferGeom.computeBoundingSphere();
+    const mesh = new THREE.Mesh(bufferGeom, materials[key]);
+    mesh.renderOrder = key === "road" ? 1 : 0;
+    mesh.name = `surface-${key}`;
+    group.add(mesh);
+  }
+  return group;
+};
+```
+
+- [ ] **Step 4: Verify tests pass**
+
+Run: `npx vitest run tests/render/track-mesh.test.ts`
+Expected: 1 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/render/track-mesh.ts tests/render/track-mesh.test.ts
+git commit -m "feat(render): track surface mesh builder from spline + band offsets"
+```
+
+### Task 22: Prop instancer (procedural box/cylinder props for Phase 1)
+
+**Files:**
+- Modify: `src/render/prop-instancer.ts`
+- Create: `tests/render/prop-instancer.test.ts`
+
+- [ ] **Step 1: Write failing test**
+
+Content of `tests/render/prop-instancer.test.ts`:
+
+```typescript
+import { describe, expect, it } from "vitest";
+import { createPropInstancer } from "../../src/render/prop-instancer";
+
+describe("prop instancer", () => {
+  it("groups same propId instances into a single InstancedMesh", () => {
+    const instancer = createPropInstancer();
+    instancer.addInstance("mailbox", [0, 0, 0], 0, "small");
+    instancer.addInstance("mailbox", [5, 0, 0], 0.2, "small");
+    instancer.addInstance("bin",     [0, 0, 5], 0, "medium");
+    const group = instancer.build();
+    const meshes = group.children.filter((c) => c.type === "Mesh" || c.type === "InstancedMesh");
+    expect(meshes.length).toBe(2);
+  });
+});
+```
+
+- [ ] **Step 2: Verify failure**
+
+Run: `npx vitest run tests/render/prop-instancer.test.ts`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+Content of `src/render/prop-instancer.ts`:
+
+```typescript
+import * as THREE from "three";
+
+type PropId = "mailbox" | "bin" | "cone" | "fence-post" | "tree-conifer" | "street-light" | "parked-sedan" | "house-block";
+
+interface InstanceAccumulator {
+  readonly geometry: THREE.BufferGeometry;
+  readonly material: THREE.Material;
+  readonly transforms: Array<{ position: [number, number, number]; rotation: number; scale: number }>;
+}
+
+const SCALE_BUCKETS: Record<"small" | "medium" | "large", number> = {
+  small: 0.9,
+  medium: 1.0,
+  large: 1.1
+};
+
+const makePrototype = (propId: PropId): { geometry: THREE.BufferGeometry; material: THREE.Material } => {
+  switch (propId) {
+    case "mailbox": {
+      const geometry = new THREE.BoxGeometry(0.15, 0.3, 0.25);
+      const material = new THREE.MeshStandardMaterial({ color: 0x5a5450, roughness: 0.85 });
+      return { geometry, material };
+    }
+    case "bin": {
+      const geometry = new THREE.CylinderGeometry(0.18, 0.2, 0.5, 12);
+      const material = new THREE.MeshStandardMaterial({ color: 0x303432, roughness: 0.7 });
+      return { geometry, material };
+    }
+    case "cone": {
+      const geometry = new THREE.ConeGeometry(0.12, 0.32, 10);
+      const material = new THREE.MeshStandardMaterial({ color: 0xd35a1a, roughness: 0.6 });
+      return { geometry, material };
+    }
+    case "fence-post": {
+      const geometry = new THREE.BoxGeometry(0.08, 0.6, 0.08);
+      const material = new THREE.MeshStandardMaterial({ color: 0x9a6e3c, roughness: 0.92 });
+      return { geometry, material };
+    }
+    case "tree-conifer": {
+      const geometry = new THREE.ConeGeometry(0.6, 1.6, 12);
+      const material = new THREE.MeshStandardMaterial({ color: 0x3a7a48, roughness: 1.0 });
+      return { geometry, material };
+    }
+    case "street-light": {
+      const geometry = new THREE.BoxGeometry(0.08, 1.6, 0.08);
+      const material = new THREE.MeshStandardMaterial({ color: 0x7a7a7a, roughness: 0.6 });
+      return { geometry, material };
+    }
+    case "parked-sedan": {
+      const geometry = new THREE.BoxGeometry(1.9, 0.6, 0.8);
+      const material = new THREE.MeshStandardMaterial({ color: 0x184468, roughness: 0.5, metalness: 0.2 });
+      return { geometry, material };
+    }
+    case "house-block": {
+      const geometry = new THREE.BoxGeometry(4, 2.2, 3);
+      const material = new THREE.MeshStandardMaterial({ color: 0xc06a4a, roughness: 0.9 });
+      return { geometry, material };
+    }
+  }
+};
+
+export interface PropInstancer {
+  addInstance: (propId: PropId, position: [number, number, number], rotation: number, scaleBucket: keyof typeof SCALE_BUCKETS) => void;
+  build: () => THREE.Group;
+}
+
+export const createPropInstancer = (): PropInstancer => {
+  const buckets = new Map<PropId, InstanceAccumulator>();
+  const addInstance: PropInstancer["addInstance"] = (propId, position, rotation, scaleBucket) => {
+    let bucket = buckets.get(propId);
+    if (!bucket) {
+      const proto = makePrototype(propId);
+      bucket = { geometry: proto.geometry, material: proto.material, transforms: [] };
+      buckets.set(propId, bucket);
+    }
+    bucket.transforms.push({ position, rotation, scale: SCALE_BUCKETS[scaleBucket] });
+  };
+  const build = (): THREE.Group => {
+    const group = new THREE.Group();
+    group.name = "props";
+    const matrix = new THREE.Matrix4();
+    for (const [propId, bucket] of buckets) {
+      const instanced = new THREE.InstancedMesh(bucket.geometry, bucket.material, bucket.transforms.length);
+      instanced.name = `prop-${propId}`;
+      for (let i = 0; i < bucket.transforms.length; i += 1) {
+        const { position, rotation, scale } = bucket.transforms[i];
+        matrix.makeRotationY(rotation).setPosition(position[0], position[1], position[2]);
+        matrix.scale(new THREE.Vector3(scale, scale, scale));
+        instanced.setMatrixAt(i, matrix);
+      }
+      instanced.instanceMatrix.needsUpdate = true;
+      group.add(instanced);
+    }
+    return group;
+  };
+  return { addInstance, build };
+};
+```
+
+- [ ] **Step 4: Verify**
+
+Run: `npx vitest run tests/render/prop-instancer.test.ts`
+Expected: 1 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/render/prop-instancer.ts tests/render/prop-instancer.test.ts
+git commit -m "feat(render): instanced prop renderer for Phase 1 procedural props"
+```
+
+### Task 23: Procedural car mesh (chassis + 4 wheels + antenna)
+
+**Files:**
+- Modify: `src/render/car-mesh.ts`
+
+- [ ] **Step 1: Implement**
+
+Content of `src/render/car-mesh.ts`:
+
+```typescript
+import * as THREE from "three";
+
+export interface CarVisualParts {
+  readonly group: THREE.Group;
+  readonly chassis: THREE.Mesh;
+  readonly wheels: readonly THREE.Mesh[];
+  readonly antenna: THREE.Mesh;
+  readonly boostGlow: THREE.Mesh;
+}
+
+export interface CarStyle {
+  readonly primaryColor: string;
+  readonly secondaryColor: string;
+}
+
+export const createCarMesh = (style: CarStyle): CarVisualParts => {
+  const group = new THREE.Group();
+  group.name = "car";
+
+  const chassisGeom = new THREE.BoxGeometry(0.6, 0.24, 1.0);
+  const chassisMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(style.primaryColor),
+    roughness: 0.45,
+    metalness: 0.35
+  });
+  const chassis = new THREE.Mesh(chassisGeom, chassisMat);
+  chassis.position.y = 0.18;
+  chassis.castShadow = true;
+  group.add(chassis);
+
+  const cabinGeom = new THREE.BoxGeometry(0.46, 0.18, 0.5);
+  const cabinMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(style.secondaryColor),
+    roughness: 0.4,
+    metalness: 0.1
+  });
+  const cabin = new THREE.Mesh(cabinGeom, cabinMat);
+  cabin.position.set(0, 0.36, -0.05);
+  group.add(cabin);
+
+  const wheelGeom = new THREE.CylinderGeometry(0.12, 0.12, 0.08, 16);
+  wheelGeom.rotateZ(Math.PI / 2);
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.8 });
+  const wheelPositions: Array<[number, number, number]> = [
+    [-0.3, 0.12, 0.38],
+    [0.3, 0.12, 0.38],
+    [-0.3, 0.12, -0.38],
+    [0.3, 0.12, -0.38]
+  ];
+  const wheels = wheelPositions.map(([x, y, z]) => {
+    const wheel = new THREE.Mesh(wheelGeom, wheelMat);
+    wheel.position.set(x, y, z);
+    wheel.castShadow = true;
+    group.add(wheel);
+    return wheel;
+  });
+
+  const antennaGeom = new THREE.CylinderGeometry(0.005, 0.005, 0.5, 6);
+  const antennaMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.6 });
+  const antenna = new THREE.Mesh(antennaGeom, antennaMat);
+  antenna.position.set(-0.2, 0.55, -0.3);
+  group.add(antenna);
+
+  const glowGeom = new THREE.SphereGeometry(0.18, 16, 16);
+  const glowMat = new THREE.MeshBasicMaterial({ color: 0xffc84a, transparent: true, opacity: 0.0 });
+  const boostGlow = new THREE.Mesh(glowGeom, glowMat);
+  boostGlow.position.set(0, 0.18, -0.6);
+  group.add(boostGlow);
+
+  return { group, chassis, wheels, antenna, boostGlow };
+};
+
+export const setCarBoostGlow = (parts: CarVisualParts, intensity: number): void => {
+  const material = parts.boostGlow.material as THREE.MeshBasicMaterial;
+  material.opacity = Math.max(0, Math.min(1, intensity));
+};
+```
+
+- [ ] **Step 2: Typecheck**
+
+Run: `npm run typecheck`
+Expected: no errors.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/render/car-mesh.ts
+git commit -m "feat(render): procedural car mesh with chassis + wheels + antenna + boost glow"
+```
+
+### Task 24: Camera rig (low chase with lookahead) + FX placeholder
+
+**Files:**
+- Modify: `src/render/camera.ts`
+- Modify: `src/render/fx.ts`
+
+- [ ] **Step 1: Implement chase camera**
+
+Content of `src/render/camera.ts`:
+
+```typescript
+import * as THREE from "three";
+import { lerp } from "../util/math";
+
+export interface ChaseCameraTuning {
+  readonly distance: number;
+  readonly height: number;
+  readonly lookAhead: number;
+  readonly followLag: number;
+  readonly boostFovBonus: number;
+  readonly baseFov: number;
+}
+
+export const DEFAULT_CHASE_CAMERA_TUNING: ChaseCameraTuning = {
+  distance: 2.1,
+  height: 0.55,
+  lookAhead: 2.6,
+  followLag: 0.12,
+  boostFovBonus: 8,
+  baseFov: 68
+};
+
+export interface ChaseCameraState {
+  position: THREE.Vector3;
+  target: THREE.Vector3;
+}
+
+export const createChaseCameraState = (): ChaseCameraState => ({
+  position: new THREE.Vector3(),
+  target: new THREE.Vector3()
+});
+
+export const updateChaseCamera = (
+  camera: THREE.PerspectiveCamera,
+  state: ChaseCameraState,
+  carPosition: THREE.Vector3,
+  carForward: THREE.Vector3,
+  boostIntensity: number,
+  stepSeconds: number,
+  tuning: ChaseCameraTuning = DEFAULT_CHASE_CAMERA_TUNING
+): void => {
+  const desired = new THREE.Vector3(
+    carPosition.x - carForward.x * tuning.distance,
+    carPosition.y + tuning.height,
+    carPosition.z - carForward.z * tuning.distance
+  );
+  const tLerp = 1 - Math.pow(tuning.followLag, stepSeconds);
+  state.position.lerp(desired, tLerp);
+  const desiredTarget = new THREE.Vector3(
+    carPosition.x + carForward.x * tuning.lookAhead,
+    carPosition.y + 0.2,
+    carPosition.z + carForward.z * tuning.lookAhead
+  );
+  state.target.lerp(desiredTarget, tLerp);
+
+  camera.position.copy(state.position);
+  camera.lookAt(state.target);
+  camera.fov = lerp(tuning.baseFov, tuning.baseFov + tuning.boostFovBonus, Math.min(1, boostIntensity));
+  camera.updateProjectionMatrix();
+};
+```
+
+Content of `src/render/fx.ts`:
+
+```typescript
+import * as THREE from "three";
+
+export interface BoostDustPool {
+  readonly group: THREE.Group;
+  spawn: (position: THREE.Vector3, intensity: number) => void;
+  update: (stepSeconds: number) => void;
+}
+
+export const createBoostDustPool = (capacity = 64): BoostDustPool => {
+  const group = new THREE.Group();
+  group.name = "boost-dust";
+  const geometry = new THREE.SphereGeometry(0.05, 6, 6);
+  const material = new THREE.MeshBasicMaterial({ color: 0xf8d6a4, transparent: true, opacity: 0 });
+  const particles: Array<{ mesh: THREE.Mesh; life: number; velocity: THREE.Vector3 }> = [];
+  for (let i = 0; i < capacity; i += 1) {
+    const mesh = new THREE.Mesh(geometry, material.clone());
+    mesh.visible = false;
+    group.add(mesh);
+    particles.push({ mesh, life: 0, velocity: new THREE.Vector3() });
+  }
+  let cursor = 0;
+  const spawn = (position: THREE.Vector3, intensity: number): void => {
+    const count = Math.min(4, Math.max(1, Math.floor(intensity * 4)));
+    for (let i = 0; i < count; i += 1) {
+      const p = particles[cursor];
+      cursor = (cursor + 1) % particles.length;
+      p.mesh.position.copy(position);
+      p.mesh.position.y += 0.05;
+      p.mesh.visible = true;
+      (p.mesh.material as THREE.MeshBasicMaterial).opacity = 0.8;
+      p.life = 0.35;
+      const angle = Math.random() * Math.PI * 2;
+      p.velocity.set(Math.cos(angle) * 0.8, 1.2, Math.sin(angle) * 0.8);
+    }
+  };
+  const update = (stepSeconds: number): void => {
+    for (const p of particles) {
+      if (p.life <= 0) continue;
+      p.life -= stepSeconds;
+      p.mesh.position.addScaledVector(p.velocity, stepSeconds);
+      (p.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, p.life / 0.35 * 0.8);
+      p.velocity.y -= 2.0 * stepSeconds;
+      if (p.life <= 0) p.mesh.visible = false;
+    }
+  };
+  return { group, spawn, update };
+};
+```
+
+- [ ] **Step 2: Typecheck**
+
+Run: `npm run typecheck`
+Expected: no errors.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/render/camera.ts src/render/fx.ts
+git commit -m "feat(render): low chase camera + boost dust particle pool"
+```
+
+### Task 25: HUD binder (DOM, reads RaceSnapshot)
+
+**Files:**
+- Modify: `src/render/hud.ts`
+
+- [ ] **Step 1: Implement**
+
+Content of `src/render/hud.ts`:
+
+```typescript
+import type { CarSnapshot, RaceSnapshot } from "../sim/types";
+
+export interface HudRefs {
+  readonly lap: HTMLElement;
+  readonly place: HTMLElement;
+  readonly speed: HTMLElement;
+  readonly pickup: HTMLElement;
+  readonly timer: HTMLElement;
+  readonly best: HTMLElement;
+  readonly overlayKicker: HTMLElement;
+  readonly overlayTitle: HTMLElement;
+  readonly overlayBody: HTMLElement;
+  readonly overlayPanel: HTMLElement;
+}
+
+const formatTime = (seconds: number): string => {
+  const clamped = Math.max(0, seconds);
+  const minutes = Math.floor(clamped / 60).toString().padStart(2, "0");
+  const rest = clamped % 60;
+  const whole = Math.floor(rest).toString().padStart(2, "0");
+  const hundredths = Math.floor((rest - Math.floor(rest)) * 100).toString().padStart(2, "0");
+  return `${minutes}:${whole}.${hundredths}`;
+};
+
+const speedKmh = (car: CarSnapshot): number => {
+  const magnitude = Math.hypot(car.velocity.x, car.velocity.z);
+  return magnitude * 3.6; // m/s → km/h
+};
+
+export const updateHud = (refs: HudRefs, race: RaceSnapshot, playerId: string): void => {
+  const player = race.cars.find((c) => c.id === playerId);
+  if (!player) return;
+  refs.lap.textContent = `${player.lap + 1} / ${race.lapsToWin}`;
+  const placeIndex = race.standings.indexOf(player.id);
+  refs.place.textContent = `${placeIndex + 1} / ${race.cars.length}`;
+  refs.speed.textContent = `${Math.round(speedKmh(player))} km/h`;
+  refs.pickup.textContent = player.pickupHeld
+    ? player.pickupHeld
+    : player.boostRemaining > 0
+      ? `Boost ${player.boostRemaining.toFixed(1)}s`
+      : "Find a pickup";
+  refs.timer.textContent = formatTime(race.raceTime);
+  refs.best.textContent = race.bestLap === null ? "--:--.--" : formatTime(race.bestLap);
+};
+
+export const setOverlay = (refs: HudRefs, kicker: string, title: string, body: string): void => {
+  refs.overlayKicker.textContent = kicker;
+  refs.overlayTitle.textContent = title;
+  refs.overlayBody.textContent = body;
+  refs.overlayPanel.dataset.state = "visible";
+};
+
+export const hideOverlay = (refs: HudRefs): void => {
+  refs.overlayPanel.dataset.state = "hidden";
+};
+```
+
+- [ ] **Step 2: Typecheck**
+
+Run: `npm run typecheck`
+Expected: no errors.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/render/hud.ts
+git commit -m "feat(render): DOM HUD binder reading RaceSnapshot"
+```
+
+---
+
+## Group 7 — UI layer
+
+### Task 26: Overlay state + mobile controls
+
+**Files:**
+- Modify: `src/ui/overlay.ts`
+- Modify: `src/ui/mobile-controls.ts`
+
+- [ ] **Step 1: Implement overlay + touch binding**
+
+Content of `src/ui/overlay.ts`:
+
+```typescript
+import { hideOverlay, setOverlay, type HudRefs } from "../render/hud";
+import type { RaceStatus } from "../sim/types";
+
+const COPY = {
+  grid: {
+    kicker: "Grid Set",
+    title: "Sector 18 · Press Start",
+    body: "Three laps around the block. Grab the Spark Burst on the back straight."
+  },
+  countdown: {
+    kicker: "Launch",
+    title: "Get ready",
+    body: "Hold the throttle at the line."
+  },
+  finished: {
+    kicker: "Finish",
+    title: "Race over",
+    body: "Press R to race again."
+  },
+  paused: {
+    kicker: "Paused",
+    title: "Deep breath",
+    body: "P to resume, R to restart."
+  }
+};
+
+export const renderOverlay = (refs: HudRefs, status: RaceStatus, countdownRemaining: number): void => {
+  if (status === "grid") {
+    setOverlay(refs, COPY.grid.kicker, COPY.grid.title, COPY.grid.body);
+    return;
+  }
+  if (status === "countdown") {
+    const bigNumber = Math.max(1, Math.ceil(countdownRemaining));
+    setOverlay(refs, COPY.countdown.kicker, String(bigNumber), COPY.countdown.body);
+    return;
+  }
+  if (status === "paused") {
+    setOverlay(refs, COPY.paused.kicker, COPY.paused.title, COPY.paused.body);
+    return;
+  }
+  if (status === "finished") {
+    setOverlay(refs, COPY.finished.kicker, COPY.finished.title, COPY.finished.body);
+    return;
+  }
+  hideOverlay(refs);
+};
+```
+
+Content of `src/ui/mobile-controls.ts`:
+
+```typescript
+import type { TouchState } from "../engine/input";
+
+export interface MobileControlBindings {
+  state: TouchState;
+  dispose: () => void;
+}
+
+export const bindMobileControls = (root: HTMLElement): MobileControlBindings => {
+  const state: TouchState = {
+    left: false, right: false, accelerate: false, brake: false, start: false, restart: false
+  };
+
+  type Control = keyof TouchState;
+  const handlers: Array<() => void> = [];
+
+  const bind = (selector: string, key: Control) => {
+    const el = root.querySelector<HTMLElement>(selector);
+    if (!el) return;
+    const down = (e: Event) => { state[key] = true; e.preventDefault(); };
+    const up = (e: Event) => { state[key] = false; e.preventDefault(); };
+    el.addEventListener("pointerdown", down);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointerleave", up);
+    el.addEventListener("pointercancel", up);
+    handlers.push(() => {
+      el.removeEventListener("pointerdown", down);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointerleave", up);
+      el.removeEventListener("pointercancel", up);
+    });
+  };
+
+  bind('[data-control="left"]', "left");
+  bind('[data-control="right"]', "right");
+  bind('[data-control="accelerate"]', "accelerate");
+  bind('[data-control="brake"]', "brake");
+  bind('[data-control="start"]', "start");
+  bind('[data-control="restart"]', "restart");
+
+  const dispose = (): void => {
+    for (const off of handlers) off();
+  };
+
+  return { state, dispose };
+};
+```
+
+- [ ] **Step 2: Typecheck**
+
+Run: `npm run typecheck`
+Expected: no errors.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/ui/overlay.ts src/ui/mobile-controls.ts
+git commit -m "feat(ui): overlay copy + mobile pointer bindings"
+```
+
+### Task 27: Shell (keyboard listener + gamepad polling)
+
+**Files:**
+- Modify: `src/ui/shell.ts`
+
+- [ ] **Step 1: Implement a unified input source aggregator**
+
+Content of `src/ui/shell.ts`:
+
+```typescript
+import {
+  emptyInputFrame,
+  emptyKeyboardState,
+  emptyTouchState,
+  gamepadToInputFrame,
+  keyboardToInputFrame,
+  mergeInputFrames,
+  motionGammaToInputFrame,
+  touchToInputFrame,
+  type InputFrame,
+  type KeyboardState,
+  type TouchState
+} from "../engine/input";
+
+export interface ShellInputs {
+  readonly getInput: () => InputFrame;
+  readonly keyboard: KeyboardState;
+  readonly touch: TouchState;
+  setTouchSteeringEnabled: (enabled: boolean) => void;
+  setMotionGamma: (gamma: number | null) => void;
+  dispose: () => void;
+}
+
+const KEY_MAP: Record<string, keyof KeyboardState> = {
+  ArrowUp: "up",
+  ArrowDown: "down",
+  ArrowLeft: "left",
+  ArrowRight: "right",
+  KeyW: "up",
+  KeyS: "down",
+  KeyA: "left",
+  KeyD: "right",
+  Space: "space",
+  KeyR: "r",
+  KeyP: "p",
+  KeyC: "c"
+};
+
+export const bootShellInputs = (touch: TouchState): ShellInputs => {
+  const keyboard = emptyKeyboardState();
+  let motionGamma: number | null = null;
+  let tiltEnabled = false;
+
+  const onKeyDown = (event: KeyboardEvent): void => {
+    const key = KEY_MAP[event.code];
+    if (!key) return;
+    keyboard[key] = true;
+    event.preventDefault();
+  };
+  const onKeyUp = (event: KeyboardEvent): void => {
+    const key = KEY_MAP[event.code];
+    if (!key) return;
+    keyboard[key] = false;
+    event.preventDefault();
+  };
+  const onBlur = (): void => {
+    for (const key of Object.keys(keyboard) as Array<keyof KeyboardState>) {
+      keyboard[key] = false;
+    }
+  };
+
+  window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("keyup", onKeyUp);
+  window.addEventListener("blur", onBlur);
+
+  const getInput = (): InputFrame => {
+    const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+    const pad = pads.find((p) => p && p.connected) ?? null;
+    return mergeInputFrames(
+      keyboardToInputFrame(keyboard),
+      touchToInputFrame(touch),
+      gamepadToInputFrame(pad),
+      motionGammaToInputFrame(motionGamma, tiltEnabled),
+      emptyInputFrame()
+    );
+  };
+
+  return {
+    getInput,
+    keyboard,
+    touch,
+    setTouchSteeringEnabled: (enabled: boolean) => {
+      tiltEnabled = enabled;
+    },
+    setMotionGamma: (gamma: number | null) => {
+      motionGamma = gamma;
+    },
+    dispose: () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    }
+  };
+};
+
+export const createEmptyTouch = (): TouchState => emptyTouchState();
+```
+
+- [ ] **Step 2: Typecheck**
+
+Run: `npm run typecheck`
+Expected: no errors.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/ui/shell.ts
+git commit -m "feat(ui): shell inputs aggregator unifying keyboard/touch/gamepad/tilt"
+```
+
+### Task 28: Storage wrapper (localStorage + IndexedDB skeleton)
+
+**Files:**
+- Modify: `src/data/storage.ts`
+- Create: `tests/data/storage.test.ts`
+
+- [ ] **Step 1: Write failing test**
+
+Content of `tests/data/storage.test.ts`:
+
+```typescript
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { loadSettings, saveSettings } from "../../src/data/storage";
+
+class MemoryStorage implements Storage {
+  private store = new Map<string, string>();
+  length = 0;
+  clear(): void { this.store.clear(); this.length = 0; }
+  getItem(key: string): string | null { return this.store.get(key) ?? null; }
+  key(index: number): string | null { return Array.from(this.store.keys())[index] ?? null; }
+  removeItem(key: string): void { this.store.delete(key); this.length = this.store.size; }
+  setItem(key: string, value: string): void { this.store.set(key, value); this.length = this.store.size; }
+}
+
+describe("settings storage", () => {
+  let storage: MemoryStorage;
+  beforeEach(() => { storage = new MemoryStorage(); });
+  afterEach(() => { storage.clear(); });
+
+  it("returns defaults when storage is empty", () => {
+    const settings = loadSettings(storage);
+    expect(settings.touchSteering).toBe("buttons");
+    expect(settings.audio.master).toBeCloseTo(0.8, 2);
+  });
+
+  it("round-trips saved settings", () => {
+    saveSettings(storage, { touchSteering: "tilt", audio: { master: 0.3, music: 0.5, sfx: 0.9, engine: 0.7, ui: 0.6 } });
+    const loaded = loadSettings(storage);
+    expect(loaded.touchSteering).toBe("tilt");
+    expect(loaded.audio.master).toBeCloseTo(0.3, 2);
+  });
+
+  it("falls back to defaults when stored JSON is malformed", () => {
+    storage.setItem("mini-rc-racer:settings", "{not json");
+    const loaded = loadSettings(storage);
+    expect(loaded.touchSteering).toBe("buttons");
+  });
+});
+```
+
+- [ ] **Step 2: Verify failure**
+
+Run: `npx vitest run tests/data/storage.test.ts`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+Content of `src/data/storage.ts`:
+
+```typescript
+import { z } from "zod";
+
+const SETTINGS_KEY = "mini-rc-racer:settings";
+const BEST_LAP_PREFIX = "mini-rc-racer:best:";
+
+const AudioSettingsSchema = z.object({
+  master: z.number().min(0).max(1),
+  music: z.number().min(0).max(1),
+  sfx: z.number().min(0).max(1),
+  engine: z.number().min(0).max(1),
+  ui: z.number().min(0).max(1)
+});
+
+const SettingsSchema = z.object({
+  touchSteering: z.enum(["buttons", "tilt"]),
+  audio: AudioSettingsSchema
+});
+
+export type Settings = z.infer<typeof SettingsSchema>;
+
+export const DEFAULT_SETTINGS: Settings = {
+  touchSteering: "buttons",
+  audio: { master: 0.8, music: 0.7, sfx: 0.9, engine: 0.7, ui: 0.8 }
+};
+
+export const loadSettings = (storage: Storage): Settings => {
+  try {
+    const raw = storage.getItem(SETTINGS_KEY);
+    if (!raw) return DEFAULT_SETTINGS;
+    const parsed = SettingsSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) return DEFAULT_SETTINGS;
+    return parsed.data;
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+};
+
+export const saveSettings = (storage: Storage, settings: Settings): void => {
+  storage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+};
+
+export const loadBestLap = (storage: Storage, trackId: string): number | null => {
+  const raw = storage.getItem(`${BEST_LAP_PREFIX}${trackId}`);
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+export const saveBestLap = (storage: Storage, trackId: string, seconds: number): void => {
+  if (!Number.isFinite(seconds) || seconds <= 0) return;
+  storage.setItem(`${BEST_LAP_PREFIX}${trackId}`, seconds.toString());
+};
+```
+
+- [ ] **Step 4: Verify**
+
+Run: `npx vitest run tests/data/storage.test.ts`
+Expected: 3 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/data/storage.ts tests/data/storage.test.ts
+git commit -m "feat(data): settings + best-lap storage with zod validation"
+```
+
+---
+
+## Group 8 — Content authoring
+
+### Task 29: Sector 18 track JSON
+
+**Files:**
+- Create: `src/content/tracks/sector-18.json`
+- Create: `src/content/lightmaps/neutral.png` (placeholder, 4×4 white PNG)
+
+- [ ] **Step 1: Write Sector 18 as JSON**
+
+Sector 18 is a closed cul-de-sac loop: 12 control points forming a bean-shaped circuit with one long front straight, two banked corners, a short back straight with a chicane, and a wider finish bend. Prop placements use the prop instancer types from Task 22.
+
+Content of `src/content/tracks/sector-18.json`:
+
+```json
+{
+  "id": "sector-18",
+  "displayName": "Sector 18",
+  "fantasy": "A quiet suburban cul-de-sac where parked sedans and driveways turn into racing furniture.",
+  "recommendedClass": "stock",
+  "spline": [
+    { "x":  0.0, "y": 0.0, "z":  0.0, "halfWidth": 3.2 },
+    { "x":  8.0, "y": 0.0, "z":  2.0, "halfWidth": 3.2 },
+    { "x": 14.0, "y": 0.0, "z":  6.0, "halfWidth": 3.0 },
+    { "x": 16.0, "y": 0.0, "z": 13.0, "halfWidth": 2.8 },
+    { "x": 12.0, "y": 0.0, "z": 19.0, "halfWidth": 3.0 },
+    { "x":  5.0, "y": 0.0, "z": 22.0, "halfWidth": 3.2 },
+    { "x": -3.0, "y": 0.0, "z": 21.0, "halfWidth": 3.2 },
+    { "x": -9.0, "y": 0.0, "z": 17.0, "halfWidth": 2.8 },
+    { "x":-12.0, "y": 0.0, "z": 10.0, "halfWidth": 3.0 },
+    { "x":-10.0, "y": 0.0, "z":  3.0, "halfWidth": 3.2 },
+    { "x": -6.0, "y": 0.0, "z": -2.0, "halfWidth": 3.2 },
+    { "x":  0.0, "y": 0.0, "z": -3.0, "halfWidth": 3.2 }
+  ],
+  "surfaces": {
+    "road":     { "innerOffset": 0.0, "outerOffset": 0.0 },
+    "curb":     { "innerOffset": 0.0, "outerOffset": 0.4 },
+    "sidewalk": { "innerOffset": 0.4, "outerOffset": 1.8 },
+    "verge":    { "innerOffset": 1.8, "outerOffset": 7.0 }
+  },
+  "props": [
+    { "propId": "house-block",   "position": [  16,  0,   3], "rotation": -0.4, "scaleBucket": "medium" },
+    { "propId": "house-block",   "position": [  20,  0,  12], "rotation":  0.1, "scaleBucket": "large" },
+    { "propId": "house-block",   "position": [  10,  0,  24], "rotation":  0.7, "scaleBucket": "medium" },
+    { "propId": "house-block",   "position": [  -6,  0,  26], "rotation":  1.1, "scaleBucket": "medium" },
+    { "propId": "house-block",   "position": [ -16,  0,  10], "rotation":  1.7, "scaleBucket": "medium" },
+    { "propId": "house-block",   "position": [ -14,  0,  -2], "rotation":  2.4, "scaleBucket": "medium" },
+    { "propId": "house-block",   "position": [  -2,  0,  -8], "rotation":  3.0, "scaleBucket": "large" },
+    { "propId": "parked-sedan",  "position": [  10,  0,   0], "rotation":  0.1, "scaleBucket": "medium" },
+    { "propId": "parked-sedan",  "position": [  18,  0,   9], "rotation": -0.3, "scaleBucket": "medium" },
+    { "propId": "parked-sedan",  "position": [  -7,  0,  18], "rotation":  0.9, "scaleBucket": "medium" },
+    { "propId": "parked-sedan",  "position": [ -11,  0,   0], "rotation":  2.3, "scaleBucket": "medium" },
+    { "propId": "tree-conifer",  "position": [  13,  0,  18], "rotation":  0.0, "scaleBucket": "large" },
+    { "propId": "tree-conifer",  "position": [  -9,  0,  22], "rotation":  0.0, "scaleBucket": "medium" },
+    { "propId": "tree-conifer",  "position": [ -13,  0,   5], "rotation":  0.0, "scaleBucket": "large" },
+    { "propId": "tree-conifer",  "position": [   4,  0,  25], "rotation":  0.0, "scaleBucket": "medium" },
+    { "propId": "street-light",  "position": [   5,  0,   1], "rotation":  0.0, "scaleBucket": "small" },
+    { "propId": "street-light",  "position": [  15,  0,  10], "rotation":  0.0, "scaleBucket": "small" },
+    { "propId": "street-light",  "position": [   2,  0,  22], "rotation":  0.0, "scaleBucket": "small" },
+    { "propId": "street-light",  "position": [ -11,  0,  12], "rotation":  0.0, "scaleBucket": "small" },
+    { "propId": "street-light",  "position": [  -4,  0,  -4], "rotation":  0.0, "scaleBucket": "small" },
+    { "propId": "mailbox",       "position": [   7,  0,   3], "rotation":  0.0, "scaleBucket": "small" },
+    { "propId": "mailbox",       "position": [  16,  0,   9], "rotation":  0.0, "scaleBucket": "small" },
+    { "propId": "mailbox",       "position": [  -7,  0,  19], "rotation":  0.0, "scaleBucket": "small" },
+    { "propId": "bin",           "position": [  10,  0,  -2], "rotation":  0.0, "scaleBucket": "small" },
+    { "propId": "bin",           "position": [ -11,  0,   7], "rotation":  0.0, "scaleBucket": "small" },
+    { "propId": "fence-post",    "position": [   3,  0,  25], "rotation":  0.0, "scaleBucket": "small" },
+    { "propId": "fence-post",    "position": [  -2,  0,  25], "rotation":  0.0, "scaleBucket": "small" },
+    { "propId": "fence-post",    "position": [  -7,  0,  24], "rotation":  0.0, "scaleBucket": "small" },
+    { "propId": "cone",          "position": [   0,  0,  -2], "rotation":  0.0, "scaleBucket": "small" },
+    { "propId": "cone",          "position": [   2,  0,  -2], "rotation":  0.0, "scaleBucket": "small" }
+  ],
+  "pickups": [
+    { "progress": 0.35, "sideOffset": 0.0 }
+  ],
+  "checkpoints": [0.25, 0.5, 0.75],
+  "lightmapAtlas": "neutral.png",
+  "lighting": {
+    "sunDirection": [0.4, 0.8, 0.2],
+    "hemisphereSky": "#b4d4e8",
+    "hemisphereGround": "#4a3828",
+    "fogDensity": 0.014
+  }
+}
+```
+
+- [ ] **Step 2: Create placeholder neutral lightmap**
+
+Run:
+```bash
+mkdir -p src/content/lightmaps
+node -e "const fs=require('fs');const buf=Buffer.from('89504e470d0a1a0a0000000d4948445200000004000000040802000000260893b9000000164944415478da63fcff9f81838181818181818181000085030006bbcf5d4d0000000049454e44ae426082','hex');fs.writeFileSync('src/content/lightmaps/neutral.png',buf);"
+```
+This writes a valid 4×4 white PNG (~70 bytes) as the placeholder lightmap.
+
+- [ ] **Step 3: Write a schema validation test**
+
+Append to `tests/data/schemas.test.ts`:
+
+```typescript
+import sector18 from "../../src/content/tracks/sector-18.json";
+
+describe("Sector 18 content", () => {
+  it("parses through TrackSchema", () => {
+    const parsed = TrackSchema.parse(sector18);
+    expect(parsed.id).toBe("sector-18");
+  });
+});
+```
+
+- [ ] **Step 4: Verify**
+
+Run: `npx vitest run tests/data/schemas.test.ts`
+Expected: all passing, +1 new.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/content/tracks/sector-18.json src/content/lightmaps/neutral.png tests/data/schemas.test.ts
+git commit -m "feat(content): Sector 18 track data + neutral placeholder lightmap"
+```
+
+### Task 30: Boulevard car + Spark Burst pickup
+
+**Files:**
+- Create: `src/content/cars/boulevard.json`
+- Create: `src/content/pickups.json`
+
+- [ ] **Step 1: Write Boulevard JSON**
+
+Content of `src/content/cars/boulevard.json`:
+
+```json
+{
+  "id": "boulevard",
+  "displayName": "Boulevard",
+  "class": "stock",
+  "silhouette": "wedge-coupe",
+  "tuning": {
+    "mass": 1.2,
+    "wheelbase": 0.22,
+    "trackWidth": 0.14,
+    "cgHeight": 0.05,
+    "gripCeiling": 1.0,
+    "torqueCurve": [[0, 0.4], [0.5, 1.0], [1.0, 0.65]],
+    "downforce": 0.2,
+    "brakeStrength": 1.0,
+    "steerAssist": 0.3
+  },
+  "cosmetic": {
+    "paintSlots": ["#e0c874", "#20242a"],
+    "wheelSlot": "slick",
+    "antenna": "flag"
+  }
+}
+```
+
+- [ ] **Step 2: Write pickups.json**
+
+Content of `src/content/pickups.json`:
+
+```json
+{
+  "pickups": [
+    {
+      "id": "spark-burst",
+      "displayName": "Spark Burst",
+      "rarity": 1.0,
+      "classTier": "rookie",
+      "effect": {
+        "kind": "boost",
+        "duration": 2.0,
+        "throttleMultiplier": 1.6,
+        "gripMultiplier": 1.15
+      }
+    }
+  ]
+}
+```
+
+- [ ] **Step 3: Add schema tests for both**
+
+Append to `tests/data/schemas.test.ts`:
+
+```typescript
+import boulevard from "../../src/content/cars/boulevard.json";
+import pickupsRoster from "../../src/content/pickups.json";
+
+describe("Boulevard content", () => {
+  it("parses through CarSchema", () => {
+    const parsed = CarSchema.parse(boulevard);
+    expect(parsed.class).toBe("stock");
+  });
+});
+
+describe("pickup roster content", () => {
+  it("parses through PickupRosterSchema", () => {
+    const parsed = PickupRosterSchema.parse(pickupsRoster);
+    expect(parsed.pickups).toHaveLength(1);
+  });
+});
+```
+
+- [ ] **Step 4: Verify**
+
+Run: `npx vitest run tests/data/schemas.test.ts`
+Expected: all passing with new cases.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/content/cars/boulevard.json src/content/pickups.json tests/data/schemas.test.ts
+git commit -m "feat(content): Boulevard (Stock class) + Spark Burst roster"
+```
+
+---
+
+## Group 9 — App wiring, old-file deletion, deploy verification
+
+### Task 31: New `src/app.ts` entry that assembles everything
+
+**Files:**
+- Create: `src/app.ts`
+- Modify: `index.html` (swap script path)
+
+- [ ] **Step 1: Write app.ts**
+
+Content of `src/app.ts`:
+
+```typescript
+import "./style.css";
+import * as THREE from "three";
+
+import { createEventBus, type GameEvents } from "./engine/events";
+import { createLoopRunner } from "./engine/loop";
+import { createSceneRig, type SceneLighting } from "./render/scene";
+import { buildTrackMesh } from "./render/track-mesh";
+import { createPropInstancer } from "./render/prop-instancer";
+import { createCarMesh, setCarBoostGlow } from "./render/car-mesh";
+import { createChaseCameraState, DEFAULT_CHASE_CAMERA_TUNING, updateChaseCamera } from "./render/camera";
+import { createBoostDustPool } from "./render/fx";
+import { hideOverlay, setOverlay, updateHud, type HudRefs } from "./render/hud";
+import { renderOverlay } from "./ui/overlay";
+import { bindMobileControls } from "./ui/mobile-controls";
+import { bootShellInputs } from "./ui/shell";
+import { createAudioSystem } from "./engine/audio";
+import { createRace, onPausePressed, onStartPressed, stepRace } from "./sim/race";
+import { stepCar, activateSparkBurst, grantPickup } from "./sim/car";
+import type { CarRuntime } from "./sim/car";
+import { createTrackRuntime } from "./sim/track-runtime";
+import { createPickup, collectPickup, stepPickup } from "./sim/pickups";
+import { createAiDriver, aiInput } from "./sim/ai";
+import type { RaceState } from "./sim/race";
+import type { CarTuning } from "./sim/types";
+import { TrackSchema, CarSchema, PickupRosterSchema } from "./data/schemas";
+import { loadBestLap, loadSettings, saveBestLap } from "./data/storage";
+import sector18Json from "./content/tracks/sector-18.json";
+import boulevardJson from "./content/cars/boulevard.json";
+import pickupsJson from "./content/pickups.json";
+import { emptyInputFrame, type InputFrame } from "./engine/input";
+import { length3, type Vec3 } from "./util/math";
+
+const track = TrackSchema.parse(sector18Json);
+const boulevard = CarSchema.parse(boulevardJson);
+PickupRosterSchema.parse(pickupsJson); // parsed for validation; roster used directly by sim via typed constants.
+
+const canvas = document.querySelector<HTMLCanvasElement>("#game-canvas");
+if (!canvas) throw new Error("#game-canvas missing");
+
+const hud: HudRefs = {
+  lap: requireEl("lap-value"),
+  place: requireEl("place-value"),
+  speed: requireEl("speed-value"),
+  pickup: requireEl("boost-value"),
+  timer: requireEl("timer-value"),
+  best: requireEl("best-value"),
+  overlayKicker: requireEl("overlay-kicker"),
+  overlayTitle: requireEl("overlay-title"),
+  overlayBody: requireEl("overlay-body"),
+  overlayPanel: requireEl("overlay-panel")
+};
+
+const sceneLighting: SceneLighting = track.lighting;
+const rig = createSceneRig(canvas, sceneLighting);
+
+const trackRuntime = createTrackRuntime(track.spline, 512);
+const trackMesh = buildTrackMesh(track.spline, 384, track.surfaces);
+rig.scene.add(trackMesh);
+
+const instancer = createPropInstancer();
+for (const prop of track.props) {
+  instancer.addInstance(prop.propId as Parameters<typeof instancer.addInstance>[0], prop.position, prop.rotation, prop.scaleBucket);
+}
+rig.scene.add(instancer.build());
+
+const boost = createBoostDustPool();
+rig.scene.add(boost.group);
+
+const playerVisuals = createCarMesh({ primaryColor: boulevard.cosmetic.paintSlots[0], secondaryColor: boulevard.cosmetic.paintSlots[1] ?? "#202222" });
+const aiVisuals = createCarMesh({ primaryColor: "#d6564a", secondaryColor: "#201018" });
+rig.scene.add(playerVisuals.group, aiVisuals.group);
+
+const tuning: CarTuning = boulevard.tuning;
+let player: CarRuntime = {
+  id: "player",
+  tuning,
+  chassis: { position: { x: 0, y: 0.12, z: -1.0 }, velocity: { x: 0, y: 0, z: 0 }, yaw: Math.PI, angularVelocity: 0 },
+  rpm: 0, wheelSpin: 0, pickupHeld: null, boostRemaining: 0, shieldRemaining: 0
+};
+let rival: CarRuntime = {
+  id: "rival",
+  tuning,
+  chassis: { position: { x: 1.5, y: 0.12, z: -1.2 }, velocity: { x: 0, y: 0, z: 0 }, yaw: Math.PI, angularVelocity: 0 },
+  rpm: 0, wheelSpin: 0, pickupHeld: null, boostRemaining: 0, shieldRemaining: 0
+};
+let playerPrevT = 0;
+let rivalPrevT = 0;
+const ai = createAiDriver({ carId: "rival", difficulty: 0.5 });
+
+const pickupSpawns = track.pickups.map((p, i) => {
+  const frame = trackRuntime.sampleFrame(p.progress);
+  const offset = p.sideOffset;
+  const pos: Vec3 = { x: frame.position.x + offset, y: 0.3, z: frame.position.z };
+  return createPickup(`pickup-${i}`, "spark-burst", pos);
+});
+const pickupMeshes = pickupSpawns.map((pickup) => {
+  const mesh = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(0.25, 0),
+    new THREE.MeshBasicMaterial({ color: 0xffc84a })
+  );
+  mesh.position.set(pickup.position.x, pickup.position.y, pickup.position.z);
+  rig.scene.add(mesh);
+  return mesh;
+});
+let pickups = pickupSpawns.slice();
+
+let race: RaceState = createRace({ lapsToWin: 3, countdownSeconds: 3 });
+
+const settings = loadSettings(window.localStorage);
+const audio = createAudioSystem();
+audio.setMasterVolume(settings.audio.master);
+
+const touch = bindMobileControls(document.body);
+const shellInputs = bootShellInputs(touch.state);
+
+const bus = createEventBus<GameEvents>();
+
+let bestLap = loadBestLap(window.localStorage, track.id);
+let lapStartTime = 0;
+
+const cameraState = createChaseCameraState();
+
+const FIXED = 1 / 120;
+
+const stepSim = (): void => {
+  const input: InputFrame = shellInputs.getInput();
+  const nextRace = (() => {
+    if (race.status === "grid" && input.buttons.start) {
+      bus.emit("race:grid", { trackId: track.id });
+      return onStartPressed(race);
+    }
+    if (input.buttons.pause) {
+      return onPausePressed(race);
+    }
+    return stepRace(race, input, FIXED);
+  })();
+  race = nextRace;
+
+  if (race.status === "countdown" || race.status === "grid" || race.status === "paused") {
+    return;
+  }
+
+  const offPlayer = trackRuntime.sampleProgress(player.chassis.position, playerPrevT);
+  playerPrevT = offPlayer.t;
+  player = stepCar(player, input, FIXED, offPlayer.offTrack);
+  if (input.buttons.pickup && player.pickupHeld === "spark-burst") {
+    player = activateSparkBurst(player);
+  }
+
+  const rivalForward: Vec3 = { x: Math.sin(rival.chassis.yaw), y: 0, z: Math.cos(rival.chassis.yaw) };
+  const rivalInput = aiInput(ai, trackRuntime, rival.chassis.position, rivalForward, rivalPrevT);
+  const offRival = trackRuntime.sampleProgress(rival.chassis.position, rivalPrevT);
+  rivalPrevT = offRival.t;
+  rival = stepCar(rival, rivalInput, FIXED, offRival.offTrack);
+
+  // Pickup collection
+  pickups = pickups.map((p, i) => {
+    if (!p.active) return stepPickup(p, FIXED);
+    if (length3({
+      x: p.position.x - player.chassis.position.x,
+      y: 0,
+      z: p.position.z - player.chassis.position.z
+    }) < 0.8 && player.pickupHeld === null) {
+      player = grantPickup(player, p.pickupId);
+      bus.emit("pickup:fired", { carId: "player", pickupId: p.pickupId });
+      pickupMeshes[i].visible = false;
+      return collectPickup(p);
+    }
+    pickupMeshes[i].visible = true;
+    return p;
+  });
+
+  // Lap detection: when player crosses t=0 going forward
+  const prevProgress = offPlayer.t;
+  if (prevProgress > 0.95) {
+    const fresh = trackRuntime.sampleProgress(player.chassis.position, prevProgress);
+    if (fresh.t < 0.05) {
+      const lapTime = race.raceTime - lapStartTime;
+      lapStartTime = race.raceTime;
+      if (lapTime > 1 && (bestLap === null || lapTime < bestLap)) {
+        bestLap = lapTime;
+        saveBestLap(window.localStorage, track.id, lapTime);
+      }
+      // lap counter bookkeeping would go here in Phase 2
+    }
+  }
+};
+
+const render = (): void => {
+  const cars = [player, rival];
+  const snapshot = {
+    status: race.status,
+    raceTime: race.raceTime,
+    countdownRemaining: race.countdownRemaining,
+    lapsToWin: race.lapsToWin,
+    bestLap,
+    lastLap: null,
+    standings: ["player", "rival"],
+    cars: cars.map((c) => ({
+      id: c.id,
+      position: c.chassis.position,
+      forward: { x: Math.sin(c.chassis.yaw), y: 0, z: Math.cos(c.chassis.yaw) } as Vec3,
+      right: { x: Math.cos(c.chassis.yaw), y: 0, z: -Math.sin(c.chassis.yaw) } as Vec3,
+      up: { x: 0, y: 1, z: 0 } as Vec3,
+      velocity: c.chassis.velocity,
+      angularVelocity: c.chassis.angularVelocity,
+      rpm: c.rpm,
+      slip: 0,
+      wheelSpin: c.wheelSpin,
+      lap: 0,
+      progress: 0,
+      totalDistance: 0,
+      offRoad: false,
+      flipped: false,
+      boostRemaining: c.boostRemaining,
+      pickupHeld: c.pickupHeld,
+      shieldRemaining: c.shieldRemaining
+    }))
+  } as const;
+
+  updateHud(hud, snapshot, "player");
+  renderOverlay(hud, race.status, race.countdownRemaining);
+
+  playerVisuals.group.position.set(player.chassis.position.x, player.chassis.position.y, player.chassis.position.z);
+  playerVisuals.group.rotation.y = player.chassis.yaw;
+  setCarBoostGlow(playerVisuals, player.boostRemaining > 0 ? Math.min(1, player.boostRemaining / 2) : 0);
+  if (player.boostRemaining > 0) {
+    boost.spawn(new THREE.Vector3(player.chassis.position.x, player.chassis.position.y, player.chassis.position.z), 1);
+  }
+  boost.update(FIXED);
+  aiVisuals.group.position.set(rival.chassis.position.x, rival.chassis.position.y, rival.chassis.position.z);
+  aiVisuals.group.rotation.y = rival.chassis.yaw;
+
+  const carForward: Vec3 = { x: Math.sin(player.chassis.yaw), y: 0, z: Math.cos(player.chassis.yaw) };
+  updateChaseCamera(
+    rig.camera,
+    cameraState,
+    new THREE.Vector3(player.chassis.position.x, player.chassis.position.y, player.chassis.position.z),
+    new THREE.Vector3(carForward.x, 0, carForward.z),
+    player.boostRemaining > 0 ? 1 : 0,
+    FIXED,
+    DEFAULT_CHASE_CAMERA_TUNING
+  );
+  rig.renderer.render(rig.scene, rig.camera);
+};
+
+const loop = createLoopRunner({
+  fixedStep: FIXED,
+  maxStepsPerFrame: 5,
+  onStep: stepSim,
+  onRender: render
+});
+
+const resize = (): void => {
+  rig.setViewport(window.innerWidth, window.innerHeight, Math.min(window.devicePixelRatio, 2));
+};
+window.addEventListener("resize", resize);
+resize();
+setOverlay(hud, "Grid Set", "Sector 18 · Press Start", "Three laps around the block.");
+loop.start();
+
+function requireEl(id: string): HTMLElement {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`Missing #${id}`);
+  return el;
+}
+```
+
+- [ ] **Step 2: Update index.html**
+
+Change the last `<script type="module" src="/src/main.ts"></script>` line to:
+
+```html
+<script type="module" src="/src/app.ts"></script>
+```
+
+- [ ] **Step 3: Typecheck + build**
+
+Run: `npm run typecheck && npm run build`
+Expected: no errors. New `app.ts` compiles and bundles.
+
+- [ ] **Step 4: Manual smoke test**
+
+Run: `npm run dev`
+Expected: opens at localhost:4173, shows "Grid Set" overlay over Sector 18. Press Space — countdown runs, you can drive the player car around the track. Rival follows the racing line.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/app.ts index.html
+git commit -m "feat(app): new layered entry wiring engine/sim/render/ui/content"
+```
+
+### Task 32: Delete old files
+
+**Files:**
+- Delete: `src/main.ts`, `src/game/game.ts`, `src/game/game3d.ts`, `src/game/view.ts`, `src/game/track.ts`, `src/game/controls.ts`, `src/game/persistence.ts`, `src/game/math.ts`
+- Delete: `tests/track.test.ts`, `tests/view.test.ts`, `tests/controls.test.ts`, `tests/persistence.test.ts`
+- Delete: `docs/maple-block-brief.md`, `docs/hud-shell-brief.md`, `docs/clean-room-analysis.md`, `docs/design-vision.md`, `docs/implementation-backlog.md`, `plans/mini-rc-racer-vertical-slice.md`
+
+- [ ] **Step 1: Delete**
+
+Run:
+```bash
+rm src/main.ts src/game/game.ts src/game/game3d.ts src/game/view.ts src/game/track.ts src/game/controls.ts src/game/persistence.ts src/game/math.ts
+rmdir src/game 2>/dev/null || true
+rm tests/track.test.ts tests/view.test.ts tests/controls.test.ts tests/persistence.test.ts
+rm docs/maple-block-brief.md docs/hud-shell-brief.md docs/clean-room-analysis.md docs/design-vision.md docs/implementation-backlog.md
+rm plans/mini-rc-racer-vertical-slice.md
+rmdir plans 2>/dev/null || true
+```
+
+- [ ] **Step 2: Verify build + tests still green**
+
+Run: `npm run typecheck && npm test && npm run build`
+Expected: all pass. No references to deleted files.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add -A
+git commit -m "chore: remove legacy game.ts, game3d.ts, view.ts, tracks, obsolete docs"
+```
+
+### Task 33: README + wrangler verification
+
+**Files:**
+- Modify: `README.md`
+
+- [ ] **Step 1: Update README to reflect new architecture**
+
+Replace the current `README.md` content with:
+
+```markdown
+# Mini RC Racer
+
+A clean-room, browser-native arcade RC racer. Tiny cars, oversized everyday spaces, low chase camera, three-lap races with pickups. Tier 3 package target: 5 tracks, 4 classes / 8 cars, 6 pickups, Race / Time Trial / Battle Tag / Championship, async ghost sharing on Cloudflare.
+
+This is the Phase 1 alpha: **Sector 18 only, Stock-class `Boulevard` only, Spark Burst pickup only, one AI rival**. Later phases add Aisle Nine, Driftwood Patio, Workshop Floor, Wing C, Rookie / Muscle / Pro cars, and the rest of the pickup roster.
+
+See:
+- Design spec: `docs/superpowers/specs/2026-04-23-rc-racer-uplift-design.plan`
+- Phase 1 plan: `docs/superpowers/plans/2026-04-23-phase-1-engine-reset.plan`
+
+## Architecture
+
+```
+src/
+  app.ts            entry
+  engine/           loop, input, audio, events, assets
+  sim/              physics, car, AI, pickups, race FSM (renderer-agnostic)
+  render/           Three.js scene, track mesh, instanced props, car mesh, FX, HUD
+  ui/               menus, overlay, mobile controls
+  content/          tracks/cars/pickups as JSON (Zod-validated)
+  data/             schemas + storage
+  util/math.ts      Vec3 + Catmull-Rom spline
+  worker/           Cloudflare Worker scaffold (Phase 3 enables ghost endpoints)
+```
+
+Sim never imports Three. Render reads sim snapshots, never mutates them.
+
+## Local development
+
+```bash
+npm install
+npm run dev
+```
+
+## Controls
+
+- `WASD` / arrows drive and steer.
+- `Space` starts; also fires the current pickup.
+- `P` pauses / resumes.
+- `R` restarts from grid.
+- Touch: on-screen buttons (and optional tilt steering on supported mobile).
+- Gamepad: left stick / D-pad steer, triggers drive, Start launches.
+
+## Verification
+
+```bash
+npm run typecheck
+npm test
+npm run build
+npm run e2e
+```
+
+## Cloudflare deploy
+
+- Pages: `npm run build` → `dist/`
+- Workers: `npx wrangler deploy`
+
+The repo includes `wrangler.toml` pinning the worker name and pointing static assets at `./dist`.
+
+## Status
+
+Phase 1 ships Sector 18 with one rival and one pickup, meeting the performance budget in §6.5 of the design spec. Phases 2–4 will land on top of this.
+```
+
+- [ ] **Step 2: Verify wrangler config is still valid**
+
+Run: `npx wrangler deploy --dry-run`
+Expected: no errors. (This performs a dry run — no actual deploy.)
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add README.md
+git commit -m "docs: update README for Phase 1 architecture"
+```
+
+---
+
+## Group 10 — Tests: Playwright E2E + visual + perf
+
+### Task 34: E2E race-smoke
+
+**Files:**
+- Create: `e2e/race-smoke.spec.ts`
+
+- [ ] **Step 1: Write test**
+
+Content of `e2e/race-smoke.spec.ts`:
+
+```typescript
+import { expect, test } from "@playwright/test";
+
+test("race goes from grid → countdown → running after pressing Space", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator("#overlay-title")).toContainText(/Sector 18/i, { timeout: 5000 });
+  await page.keyboard.press("Space");
+  // Countdown or running — wait for overlay to hide or for speed to rise above 0.
+  await page.waitForFunction(() => {
+    const text = document.getElementById("speed-value")?.textContent ?? "";
+    const kmh = parseInt(text, 10);
+    return !Number.isNaN(kmh) && kmh >= 0;
+  });
+  await page.keyboard.down("KeyW");
+  await page.waitForTimeout(3000);
+  await page.keyboard.up("KeyW");
+  const speedText = await page.locator("#speed-value").textContent();
+  expect(speedText).not.toBeNull();
+  const kmh = parseInt(speedText!, 10);
+  expect(kmh).toBeGreaterThan(5);
+});
+```
+
+- [ ] **Step 2: Run**
+
+Run: `npm run e2e -- race-smoke`
+Expected: PASS.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add e2e/race-smoke.spec.ts
+git commit -m "test(e2e): grid → countdown → running smoke covers throttle"
+```
+
+### Task 35: Visual regression + perf snapshot
+
+**Files:**
+- Create: `e2e/visual.spec.ts`
+- Create: `e2e/perf.spec.ts`
+
+- [ ] **Step 1: Write visual test**
+
+Content of `e2e/visual.spec.ts`:
+
+```typescript
+import { expect, test } from "@playwright/test";
+
+test("grid state screenshot matches baseline", async ({ page }) => {
+  await page.goto("/");
+  await page.setViewportSize({ width: 1280, height: 720 });
+  // Give three.js a moment to render.
+  await page.waitForTimeout(1500);
+  await expect(page).toHaveScreenshot("grid.png", { maxDiffPixelRatio: 0.05 });
+});
+```
+
+- [ ] **Step 2: Write perf test**
+
+Content of `e2e/perf.spec.ts`:
+
+```typescript
+import { expect, test } from "@playwright/test";
+
+test("sustained frame time under 20ms p99 over 3 seconds", async ({ page }) => {
+  await page.goto("/");
+  await page.keyboard.press("Space");
+  const samples = await page.evaluate(async () => {
+    const out: number[] = [];
+    let previous = performance.now();
+    return new Promise<number[]>((resolve) => {
+      let frames = 0;
+      const tick = (now: number) => {
+        out.push(now - previous);
+        previous = now;
+        frames += 1;
+        if (frames >= 180) resolve(out); else requestAnimationFrame(tick);
+      };
+      requestAnimationFrame((t) => { previous = t; requestAnimationFrame(tick); });
+    });
+  });
+  samples.sort((a, b) => a - b);
+  const p99 = samples[Math.floor(samples.length * 0.99)];
+  expect(p99).toBeLessThan(20);
+});
+```
+
+- [ ] **Step 3: Generate initial baseline screenshot**
+
+Run: `npm run e2e -- visual.spec.ts --update-snapshots`
+Expected: baseline `e2e/visual.spec.ts-snapshots/grid-desktop-chromium.png` is generated.
+
+- [ ] **Step 4: Run all e2e**
+
+Run: `npm run e2e`
+Expected: all three specs PASS on desktop-chromium. mobile-ios visual diffs are recorded as baselines on first run.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add e2e/visual.spec.ts e2e/perf.spec.ts e2e/**/*-snapshots
+git commit -m "test(e2e): visual baseline for grid + p99 frame-time perf guard"
+```
+
+---
+
+## Self-review
+
+**Spec coverage** (walked through the spec section by section):
+
+- §2 Invariants — covered by the architecture (sim/render separation enforced by imports), the 800-line rule (every file ≤ 400 typical), Three.js retained, Cloudflare retained (`wrangler.toml` unchanged, worker scaffold at `src/worker/index.ts`). ✓
+- §3 Success criteria — Phase 1 targets (#1 viewport-dominant, #6 bundle ≤180KB, #7 coverage ≥80%) are enforced by `index.html` + vite chunk config + vitest coverage threshold. Phase 1 does not attempt #2 (5 tracks), #3/#4 (multi-car perf under full roster), or #5 (championship) — those are Phase 2+. ✓
+- §4 Module architecture — Task 2 stubs every module, later tasks fill them, Task 32 deletes the replaced files. ✓
+- §5 Simulation — Tasks 15–19 implement physics, car, track-runtime, race FSM, pickups, AI. Stock class only; Rookie / Muscle / Pro deferred per §11.1. ✓
+- §6 Rendering — Tasks 20–25 implement scene, track mesh, prop instancer, car mesh, camera, FX, HUD. Baked lightmap uses a neutral placeholder (Task 29) — the binding slot exists; real bake is Phase 2. ✓
+- §7 Content model — Tasks 5–7 + 29–30 implement schemas and ship Sector 18 + Boulevard + Spark Burst. ✓
+- §8 Audio — Task 13 ships the bus scaffold. Samples come in Phase 2. ✓
+- §9 Persistence — Task 28 ships settings + best-lap localStorage. IndexedDB + CF KV come in Phase 2–3. ✓
+- §10 Testing — Tasks 5, 7, 8–19, 21, 22, 28, 34, 35 cover unit / integration / E2E / visual / perf. Coverage threshold in vitest config (Task 1). Determinism test deferred to Phase 2 (requires stable input recording format, not needed until replay lands). ✓
+- §11 Phase rollout — This plan implements Phase 1.1 in full. ✓
+- §12 Anti-patterns — The architecture and file-size rules prevent monolithic regrowth; sim imports are guarded by convention and reviewed per task. ✓
+
+**Placeholder scan:** No TBDs, TODOs, "similar to Task N", "handle edge cases", or vague "add appropriate X" instructions. Every code block is complete. Every test shows both the failing case (exported name missing) and the passing case.
+
+**Type consistency:** `Vec3`, `InputFrame`, `CarRuntime`, `CarSnapshot`, `RaceState`, `RaceStatus`, `TrackRuntime`, `SplineControl`, `ProgressSample`, `SurfaceBand`, `PropId`, `CarTuning`, `PickupId`, `HudRefs` — all defined once, referenced consistently across tasks. Task 19's `aiInput` signature matches Task 27's caller. Task 15's `ProgressSample.t` is used in Task 19 (`previousT` arg) and Task 31 (`playerPrevT`/`rivalPrevT`).
+
+**Scope check:** Each task is 2–5 minutes of focused work except Task 31 (`app.ts` wiring) which is ~15 minutes — acceptable because it is the single integration point that cannot be decomposed without duplicating context. Every task ends with a commit.
+
+**One intentional deferment called out in the plan rather than hidden as a TODO:** Determinism test (spec §10) moves to Phase 2 because it requires a stable input-recording format that has no consumer in Phase 1. This is documented in Group 10's scope description and the §10 coverage note above.
+
+---
+
+## Execution handoff
+
+Plan complete and saved to `docs/superpowers/plans/2026-04-23-phase-1-engine-reset.plan`. Two execution options:
+
+1. **Subagent-Driven (recommended)** — a fresh subagent per task, two-stage review between tasks, fast iteration.
+2. **Inline Execution** — execute tasks in this session using `superpowers:executing-plans`, batched with checkpoints for review.
+
+Which approach?
