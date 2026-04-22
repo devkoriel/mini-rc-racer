@@ -17,6 +17,7 @@ const Prop = z.object({
   position: z.tuple([z.number(), z.number(), z.number()]),
   rotation: z.number(),
   scaleBucket: z.enum(["small", "medium", "large"]),
+  meshAsset: z.string().regex(/\.glb$/).optional()
 });
 
 const PickupSpawn = z.object({
@@ -46,7 +47,7 @@ export const TrackSchema = z.object({
   props: z.array(Prop),
   pickups: z.array(PickupSpawn),
   checkpoints: z.array(z.number().min(0).max(1)).min(2),
-  lightmapAtlas: z.string().min(1),
+  lightmapAtlas: z.string().regex(/\.(ktx2|png)$/),
   lighting: Lighting,
 });
 
@@ -91,6 +92,12 @@ export const CarSchema = z.object({
   ]),
   tuning: CarTuning,
   cosmetic: CarCosmetic,
+  meshAsset: z.string().regex(/\.glb$/).optional(),
+  textures: z.object({
+    paintMap: z.string().regex(/\.ktx2$/).optional(),
+    roughnessMap: z.string().regex(/\.ktx2$/).optional(),
+    normalMap: z.string().regex(/\.ktx2$/).optional()
+  }).optional()
 });
 
 export type Car = z.infer<typeof CarSchema>;

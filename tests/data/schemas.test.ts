@@ -268,3 +268,64 @@ describe("PickupRosterSchema", () => {
     expect(() => PickupRosterSchema.parse(bad)).toThrow();
   });
 });
+
+describe("TrackSchema with mesh assets", () => {
+  it("accepts a prop with meshAsset", () => {
+    const withAsset = {
+      ...VALID_TRACK,
+      props: [{
+        propId: "mailbox",
+        position: [0, 0, 0],
+        rotation: 0,
+        scaleBucket: "small",
+        meshAsset: "meshes/props/mailbox.glb"
+      }]
+    };
+    const parsed = TrackSchema.parse(withAsset);
+    expect(parsed.props[0].meshAsset).toBe("meshes/props/mailbox.glb");
+  });
+
+  it("rejects a meshAsset path that does not end in .glb", () => {
+    const bad = {
+      ...VALID_TRACK,
+      props: [{
+        propId: "mailbox",
+        position: [0, 0, 0],
+        rotation: 0,
+        scaleBucket: "small",
+        meshAsset: "meshes/props/mailbox.obj"
+      }]
+    };
+    expect(() => TrackSchema.parse(bad)).toThrow();
+  });
+
+  it("accepts a ktx2 lightmap atlas", () => {
+    const withKtx2 = { ...VALID_TRACK, lightmapAtlas: "lightmaps/sector-18.ktx2" };
+    const parsed = TrackSchema.parse(withKtx2);
+    expect(parsed.lightmapAtlas).toBe("lightmaps/sector-18.ktx2");
+  });
+});
+
+describe("CarSchema with mesh + texture assets", () => {
+  it("accepts a car with meshAsset + textures", () => {
+    const withAssets = {
+      ...VALID_CAR,
+      meshAsset: "meshes/cars/boulevard.glb",
+      textures: {
+        paintMap: "cars/boulevard_paint.ktx2",
+        roughnessMap: "cars/boulevard_rough.ktx2"
+      }
+    };
+    const parsed = CarSchema.parse(withAssets);
+    expect(parsed.meshAsset).toBe("meshes/cars/boulevard.glb");
+    expect(parsed.textures?.paintMap).toMatch(/\.ktx2$/);
+  });
+
+  it("rejects a car texture path that does not end in .ktx2", () => {
+    const bad = {
+      ...VALID_CAR,
+      textures: { paintMap: "cars/paint.png" }
+    };
+    expect(() => CarSchema.parse(bad)).toThrow();
+  });
+});
