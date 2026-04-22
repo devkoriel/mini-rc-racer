@@ -94,3 +94,52 @@ export const CarSchema = z.object({
 });
 
 export type Car = z.infer<typeof CarSchema>;
+
+const PickupEffect = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("boost"),
+    duration: z.number().positive(),
+    throttleMultiplier: z.number().min(1).max(3),
+    gripMultiplier: z.number().min(1).max(2),
+  }),
+  z.object({
+    kind: z.literal("pulse"),
+    radius: z.number().positive(),
+    knockbackImpulse: z.number().positive(),
+  }),
+  z.object({
+    kind: z.literal("slick"),
+    duration: z.number().positive(),
+    gripMultiplier: z.number().min(0).max(1),
+  }),
+  z.object({
+    kind: z.literal("projectile"),
+    speed: z.number().positive(),
+    lifetime: z.number().positive(),
+    spinOnHit: z.number().positive(),
+  }),
+  z.object({
+    kind: z.literal("trap"),
+    dragMultiplier: z.number().min(0).max(1),
+    duration: z.number().positive(),
+  }),
+  z.object({
+    kind: z.literal("shield"),
+    duration: z.number().positive(),
+  }),
+]);
+
+const PickupDefinition = z.object({
+  id: z.string().min(1),
+  displayName: z.string().min(1),
+  rarity: z.number().min(0).max(1),
+  classTier: z.enum(["rookie", "stock", "muscle", "pro"]),
+  effect: PickupEffect,
+});
+
+export const PickupRosterSchema = z.object({
+  pickups: z.array(PickupDefinition).min(1),
+});
+
+export type PickupDefinitionData = z.infer<typeof PickupDefinition>;
+export type PickupRoster = z.infer<typeof PickupRosterSchema>;

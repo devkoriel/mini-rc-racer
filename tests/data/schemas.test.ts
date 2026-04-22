@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { TrackSchema, CarSchema } from "../../src/data/schemas";
+import {
+  TrackSchema,
+  CarSchema,
+  PickupRosterSchema,
+} from "../../src/data/schemas";
 
 const VALID_TRACK = {
   id: "sector-18",
@@ -168,5 +172,99 @@ describe("CarSchema", () => {
       tuning: { ...VALID_CAR.tuning, steerAssist: 1.5 },
     };
     expect(() => CarSchema.parse(bad)).toThrow();
+  });
+});
+
+const VALID_ROSTER = {
+  pickups: [
+    {
+      id: "spark-burst",
+      displayName: "Spark Burst",
+      rarity: 0.5,
+      classTier: "rookie",
+      effect: {
+        kind: "boost",
+        duration: 2.0,
+        throttleMultiplier: 1.6,
+        gripMultiplier: 1.2,
+      },
+    },
+    {
+      id: "guard",
+      displayName: "Guard",
+      rarity: 0.1,
+      classTier: "stock",
+      effect: { kind: "shield", duration: 3.0 },
+    },
+  ],
+};
+
+describe("PickupRosterSchema", () => {
+  it("accepts a valid roster", () => {
+    const parsed = PickupRosterSchema.parse(VALID_ROSTER);
+    expect(parsed.pickups).toHaveLength(2);
+  });
+
+  it("rejects unknown effect kinds", () => {
+    const bad = {
+      pickups: [
+        {
+          id: "bad",
+          displayName: "Bad",
+          rarity: 0.5,
+          classTier: "stock",
+          effect: { kind: "teleport", distance: 10 },
+        },
+      ],
+    };
+    expect(() => PickupRosterSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects an empty roster", () => {
+    expect(() => PickupRosterSchema.parse({ pickups: [] })).toThrow();
+  });
+
+  it("rejects rarity outside [0, 1]", () => {
+    const bad = { pickups: [{ ...VALID_ROSTER.pickups[0], rarity: 1.5 }] };
+    expect(() => PickupRosterSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects a boost effect with throttleMultiplier < 1", () => {
+    const bad = {
+      pickups: [
+        {
+          ...VALID_ROSTER.pickups[0],
+          effect: {
+            kind: "boost",
+            duration: 1.0,
+            throttleMultiplier: 0.5,
+            gripMultiplier: 1.0,
+          },
+        },
+      ],
+    };
+    expect(() => PickupRosterSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects a projectile effect missing speed", () => {
+    const bad = {
+      pickups: [
+        {
+          id: "rocket",
+          displayName: "Rocket",
+          rarity: 0.3,
+          classTier: "muscle",
+          effect: { kind: "projectile", lifetime: 4.0, spinOnHit: 2.0 },
+        },
+      ],
+    };
+    expect(() => PickupRosterSchema.parse(bad)).toThrow();
+  });
+
+  it("rejects an invalid classTier enum", () => {
+    const bad = {
+      pickups: [{ ...VALID_ROSTER.pickups[0], classTier: "legendary" }],
+    };
+    expect(() => PickupRosterSchema.parse(bad)).toThrow();
   });
 });
