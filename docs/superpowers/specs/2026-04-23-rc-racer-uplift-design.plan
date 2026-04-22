@@ -1,0 +1,377 @@
+# Mini RC Racer — Tier 3 Uplift Design
+
+**Date:** 2026-04-23
+**Status:** Design approved in brainstorming. Pending written review before implementation plan.
+**Supersedes:** `docs/design-vision.md`, `docs/implementation-backlog.md`, `plans/mini-rc-racer-vertical-slice.md` (vertical slice is now Phase 1 of this plan).
+
+## 1. Goal
+
+Deliver a browser-native, clean-room, arcade RC racer that captures roughly 90% of the late-90s miniature toy-car racing nostalgia — tiny cars racing through oversized everyday spaces with pickups and rivals — at 60fps on modern desktop and 30–45fps on mid-range Android, deployed through Cloudflare.
+
+## 2. Non-negotiable invariants
+
+- **Clean-room original.** No lifted track layouts, no copied car bodies, no copied HUD art, no copied item names, no copied audio, no copied brand marks. Every track, car, pickup, sound, and UI element is authored for this project.
+- **Three.js stays** as the renderer. Vite + TypeScript + Vitest stay as the build/test toolchain. Cloudflare Pages + Workers stays as the deploy target.
+- **No file over 800 lines.** Typical target 200–400. This rule failed with the current 1738-line `game3d.ts`; the new architecture exists partly to make that impossible.
+- **Sim is renderer-agnostic.** `sim/` must not import Three. Render reads sim state, never mutates it.
+- **Desktop + mobile are peers.** Keyboard, touch, tilt, and gamepad inputs all land in a single build. Mobile performance is a first-class target, not an afterthought.
+- **Tier 3 scope locked:** 5 original tracks, 8 cars across 4 classes, 6 pickups, four game modes (Race, Time Trial, Battle Tag, Championship), mirrored/reversed variants. Ghost playback is a feature available inside Time Trial and Race, not a standalone mode. Track editor deferred. Live-netcode multiplayer cut in favour of async ghost sharing via Cloudflare KV.
+
+## 3. Success criteria
+
+The project ships when all of the following are true:
+
+1. A first-time visitor on desktop sees the race viewport dominate the viewport within 2 seconds of load and can start racing within 2 clicks.
+2. Each of 5 tracks is visually distinct, scale-legible, and free of "empty field" reads from any normal chase-camera angle.
+3. On a 2020-class Android phone, the game holds 30 fps or better during a race with 6 cars, 40 props in view, and active pickups.
+4. On a 2023-class laptop, the game holds a locked 60 fps under the same conditions.
+5. A user can complete a championship run across all classes, unlock everything, upload a ghost lap, and race a friend's ghost.
+6. Gzipped initial JS stays at or below 180 KB. Per-track asset bundle stays at or below 2 MB.
+7. Every `sim/` and `util/` module has ≥80% line coverage. Determinism test passes byte-identically on every CI run.
+
+## 4. Module architecture
+
+### 4.1 Top-level tree
+
+```
+src/
+  app.ts                     thin entry: boot engine, wire UI, start loop
+  engine/
+    loop.ts                  fixed-step (120 Hz sim, render at rAF)
+    input.ts                 keyboard + touch + gamepad + tilt → InputFrame
+    audio.ts                 Web Audio context, bus routing, sample pool
+    assets.ts                texture/mesh/sound loader + cache
+    events.ts                typed event bus for UI ↔ sim decoupling
+  sim/
+    physics.ts               tire model, chassis integrator, world step
+    car.ts                   CarState, controls → forces, class tuning
+    ai.ts                    racing-line follower + recovery + rubber band
+    pickups.ts               pickup spawn, pickup effects, projectile sim
+    race.ts                  race state machine: grid→count→run→finish
+    track-runtime.ts         spline sampling, progress, sector detection
+  render/
+    scene.ts                 Three scene setup, camera, lights, fog
+    track-mesh.ts            road/curb/sidewalk/verge mesh from spline
+    prop-instancer.ts        instanced meshes for props (GPU-side)
+    car-mesh.ts              car group + wheels + boost FX + skid decals
+    sky.ts                   skybox / time-of-day
+    lightmap.ts              per-track baked lightmap binding
+    fx.ts                    dust, sparks, skid streaks, pickup glow
+    hud.ts                   in-stage DOM HUD coordinator
+  ui/
+    shell.ts                 main menu, track select, car select, settings
+    overlay.ts               grid/count/finish overlay state
+    mobile-controls.ts       touch cluster + tilt toggles
+  content/
+    tracks/*.json            spline + prop placements + pickup lines + lightmap ref
+    cars/*.json              class tuning, mesh ref, color slots
+    pickups.json             pickup roster + effects
+    championship.json        cup structure + unlock rules
+  worker/
+    index.ts                 Cloudflare Worker: /api/ghost upload/download
+  data/
+    schemas.ts               Zod schemas for tracks/cars/pickups/ghost
+    storage.ts               IndexedDB wrapper (replay, progress)
+  util/
+    math.ts                  vec, spline, sampling, curvature (migrated)
+```
+
+### 4.2 Seam rules
+
+| Boundary | Allowed direction | Forbidden |
+|---|---|---|
+| `sim/` → `render/` | none | sim must never import render or Three |
+| `render/` → `sim/` | read snapshots only | render must not mutate sim state |
+| `ui/` → `sim/` | dispatch intents via `engine/events` | no direct sim method calls from DOM handlers |
+| `worker/` | standalone module | must not import Three, sim, or DOM |
+| `content/` | JSON only | no executable code in content |
+
+### 4.3 What survives from the current repo
+
+- `src/game/math.ts` → `src/util/math.ts` (expanded with spline + curvature helpers).
+- `src/game/controls.ts` → folded into `src/engine/input.ts`.
+- `src/game/persistence.ts` → expanded into `src/data/storage.ts`.
+- `src/main.ts` → becomes `src/app.ts` with most logic moved into `engine/` and `ui/`.
+
+### 4.4 What is deleted
+
+- `src/game/game.ts` (1581-line dead 2D prototype).
+- `src/game/game3d.ts` (1738-line current renderer + sim mash-up).
+- `src/game/view.ts` (replaced by `render/scene.ts`).
+- `src/game/track.ts` (replaced by track data + `sim/track-runtime.ts`).
+
+## 5. Simulation
+
+### 5.1 Loop
+
+- Fixed sim step: 1/120 s. Variable render step: rAF.
+- Input polled at rAF, snapshotted to an immutable `InputFrame` per sim tick.
+- Sim tick outputs an immutable `WorldSnapshot` consumed by render and HUD.
+
+### 5.2 Car model
+
+- Rigid body with 4 wheel contacts, centre of gravity, weight transfer under acceleration and braking.
+- Tire forces computed per wheel: longitudinal (slip ratio) and lateral (slip angle) components using a Pacejka-lite curve with clamped peaks.
+- Steering command runs through a countersteer assist whose strength is a tuning parameter per class; assist scales down at higher skill settings.
+- Flip detection, auto-recovery timer when inverted.
+- Off-road tire multiplier reduces grip on lawn/sand/verge surfaces.
+
+### 5.3 Car classes
+
+Four classes, each with distinct tuning:
+
+| Class | Mass | Grip ceiling | Motor torque | Downforce | Assist |
+|---|---|---|---|---|---|
+| Rookie | low | medium | gentle | none | high |
+| Stock | medium | medium | balanced | light | medium |
+| Muscle | high | medium | high torque, late | light | low |
+| Pro | medium | high | smooth, peaky top end | high | off |
+
+Eight vehicles across the four classes (two per class). All silhouettes are original RC toy archetypes: open-wheel buggy, small hatch, wedge coupe, monster pickup, raked muscle, stretched van, carbon prototype, formula-style. No imported car designs.
+
+### 5.4 AI
+
+- Per track, a racing line is precomputed at content-load time as a sampled spline with a per-sample target speed derived from local curvature and class tuning.
+- Runtime AI loop per car per sim tick:
+  1. Sample target point at lookahead distance proportional to current speed.
+  2. Compute lateral error and heading error; feed PID → steering intent.
+  3. Compute corner brake demand from curvature lookup table → throttle/brake intent.
+  4. Apply rubber-banding band around player progress, tuned per difficulty.
+  5. Recovery branch if flipped or off-track.
+- Pickup usage heuristic: fire offensive pickups when a target is within effective range and trajectory; hold defensive pickups when being targeted.
+
+### 5.5 Pickups
+
+Six original pickups:
+
+| Id | Name | Behaviour |
+|---|---|---|
+| `spark-burst` | Spark Burst | Short forward speed boost with grip boost and camera FOV punch |
+| `pulse-wave` | Pulse Wave | Short-range omnidirectional shove knocking nearby rivals off line |
+| `slick` | Slick | Drops a ground hazard; rivals who cross it lose grip briefly |
+| `skip-rocket` | Skip Rocket | Bouncing forward-seeking projectile; spins target on hit |
+| `decoy-cube` | Decoy Cube | Dropped trap that latches onto the next racer who touches it, draining their speed |
+| `guard` | Guard | Short defensive bubble; absorbs next hit |
+
+Spawn rule: weighted draw based on position and distance to leader. Trailing racers bias toward disruptive items; leaders bias toward defensive/utility.
+
+### 5.6 Race FSM
+
+```
+Boot → Title → TrackSelect → CarSelect → Grid
+  → Countdown → Running ⇄ Paused
+  → Finish → Results → (Replay | SubmitGhost)? → Title
+
+Mode flag on Running:
+  Race         — 3 laps, AI rivals, pickups on
+  TimeTrial    — N laps, solo + stored ghost, pickups off
+  BattleTag    — countdown timer, pickups on, tag-by-hit scoring
+  Championship — cup sequence stitching multiple Race states
+```
+
+Every transition goes through the event bus; UI reacts to events rather than polling.
+
+## 6. Rendering
+
+### 6.1 Pipeline
+
+- WebGL2 through Three.js. PBR material with stylized diffuse tint.
+- Per-track baked lightmap (ambient occlusion + sun shadow) on a single 2 K atlas shared by static geometry.
+- Real-time lights limited to: one directional sun (shadowless at runtime thanks to the lightmap), car headlights on low-light tracks, and emissive materials on pickups and boost glow.
+
+### 6.2 Geometry
+
+- **Track surfaces:** one indexed `BufferGeometry` per surface strip (road / curb / sidewalk / verge) generated at track load from the spline. Vertex-coloured; no per-prop materials.
+- **Props:** one `InstancedMesh` per prop type. Hundreds of mailboxes, bins, fence posts, trees, cones, pallets collapse into one draw call per type.
+- **LOD:** each prop type ships with two LODs — a near silhouette mesh and a far billboard card. Switch distance roughly 120 world units.
+- **Cars:** ~2–3K triangles each, PBR material with paint / chrome / plastic masks so colours are data-driven.
+
+### 6.3 FX
+
+- GPU particle pool for boost dust and pickup poofs (shared buffer, ring allocation).
+- Skid decals written to a ground decal atlas that fades over time.
+- Camera shake, FOV pulse, and brief colour grading shifts on boost activation.
+
+### 6.4 HUD
+
+- DOM overlay (already wired in `index.html`), not WebGL. Crisp at any DPR; no overdraw cost.
+- HUD priorities: lap, place, current pickup, timer, speed. Secondary info collapses or hides.
+
+### 6.5 Performance budget
+
+| Metric | Target |
+|---|---|
+| Initial JS (gzip) | ≤ 180 KB |
+| Per-track assets | ≤ 2 MB |
+| Draw calls | ≤ 150 / frame |
+| Triangles rendered | ≤ 250K / frame |
+| Sim step | ≤ 2 ms |
+| Render step | ≤ 10 ms |
+| Desktop target | 60 fps locked on 2023-class laptop |
+| Mobile target | 60 fps on iPhone 11+, 30–45 fps on Snapdragon 7xx-class |
+
+## 7. Content model
+
+All content lives in `src/content/` as JSON, validated at load time through Zod schemas in `src/data/schemas.ts`. Adding a track or car is a data change plus asset import, never a code change.
+
+### 7.1 Track schema (summary)
+
+```
+{
+  id, displayName, fantasy, recommendedClass,
+  spline: [{ x, y, z, halfWidth }, ...],
+  surfaces: [ road, curb, sidewalk, verge ],
+  props:    [{ propId, position, rotation, scaleBucket }, ...],
+  pickups:  [{ progress, sideOffset }, ...],
+  checkpoints: [progress, progress, ...],
+  lightmapAtlas: "sector18.ktx2",
+  lighting: { sunDir, hemisphere, fogDensity }
+}
+```
+
+### 7.2 Original track roster (Tier 3 target)
+
+| Slot | Working name | Fantasy | Phase |
+|---|---|---|---|
+| 1 | Sector 18 | suburban cul-de-sac (supersedes current Maple Block) | Phase 1 |
+| 2 | Aisle Nine | grocery service corridor with pallets and spills | Phase 2 |
+| 3 | Driftwood Patio | backyard decking and sandbox with garden hose | Phase 2 |
+| 4 | Workshop Floor | tool-bench garage with ramps and tire stacks | Phase 3 |
+| 5 | Wing C | natural-history museum gallery after hours | Phase 3 |
+| — | Mirrored + reversed variants per track | unlocked via championship | Phase 3 |
+
+### 7.3 Original car roster
+
+| Class | Name | Silhouette |
+|---|---|---|
+| Rookie | Sparky | open-wheel buggy |
+| Rookie | Pillbox | small hatch |
+| Stock | Boulevard | wedge coupe |
+| Stock | Dustdevil | monster pickup |
+| Muscle | Overkill | raked muscle |
+| Muscle | Turnpike | stretched van |
+| Pro | Cyan Arrow | carbon prototype |
+| Pro | Ember 9 | formula-style |
+
+### 7.4 Championship structure
+
+Three cups, one per non-Pro class, unlocking the next class on completion. Pro cup unlocks on completion of all three. Each cup is a fixed sequence of 3–4 races across different tracks and variants. Points awarded per finish; cup win unlocks a car, a track variant, or a paint slot.
+
+## 8. Audio
+
+### 8.1 Graph
+
+```
+AudioContext master
+  ├─ Music  (looping stems; boost layer ducks in during Spark Burst)
+  ├─ SFX    (pickup + collision one-shot pool)
+  ├─ Engine (looping sample per class, playbackRate driven by rpm, pitch clamped)
+  └─ UI     (menu + HUD blips)
+```
+
+### 8.2 Rules
+
+- Engine pitch clamped so it never chipmunks at high rpm.
+- Skid loop on a separate bus, gain driven by tire slip magnitude.
+- Collision one-shot: velocity-scaled gain + small random pitch jitter.
+- Each track carries its own ambient bed (street noise / market PA / garage hum / gallery room tone); muted in TimeTrial for clean ghost sessions.
+- Audio budget per track: ≤ 1 MB compressed; streamed at track load, not initial load.
+
+## 9. Persistence and async ghosts
+
+### 9.1 Three storage layers
+
+| Layer | Contents |
+|---|---|
+| localStorage | user settings, last car and track selected, audio volumes |
+| IndexedDB | championship progress, unlocks, personal best times, local replays, local ghosts |
+| Cloudflare KV | opt-in uploaded ghost laps, per-track leaderboard heads |
+
+### 9.2 Replay and ghost format
+
+- Record input frames at the sim rate (120 Hz) plus initial state.
+- Playback is deterministic re-simulation through the same `sim/` code.
+- Per-ghost size: ~5–50 KB depending on race length.
+- Every sim release carries a version tag; mismatched ghosts surface as "incompatible" in the UI rather than running through a wrong simulation.
+
+### 9.3 Cloudflare Worker API
+
+```
+POST /api/ghost/:trackId/:variant/:carClass   upload (size + rate limited, Turnstile gated)
+GET  /api/ghost/:trackId/:variant/:carClass   top-N fastest, size capped
+GET  /api/ghost/code/:code                    fetch a specific shared ghost
+```
+
+No user accounts. Anonymous handle per install plus an optional share code. CORS restricted to the game origin. Turnstile token required on upload.
+
+## 10. Testing strategy
+
+- **Unit (Vitest):** pure modules in `sim/` and `util/`. Coverage target ≥ 80%.
+- **Integration (Vitest):** content schema round-trips (every track/car/pickup JSON parses), storage round-trips, Worker endpoints under Miniflare.
+- **Determinism test:** record a 60-second input stream, replay, assert byte-identical final world state. Must pass in CI every run.
+- **E2E (Playwright, added in Phase 1):** headful race start → finish per track, HUD assertions, key-frame screenshots, perf instrumentation.
+- **Visual regression:** Playwright screenshots at 1280×720 of Grid state per track. Diff budget tight per track; changes reviewed.
+- **Perf regression in CI:** measure 60 consecutive frames, fail the build if p99 frame time > 16 ms on the reference machine.
+
+## 11. Phase rollout
+
+Each phase is a shippable Cloudflare deploy with measurable exit criteria. No phase depends on a later phase landing.
+
+### 11.1 Phase 1 — Engine reset + one polished track
+
+- New module skeleton lands and compiles. `game3d.ts`, `game.ts`, `view.ts`, `game/track.ts` deleted.
+- `sim/` implements physics, car model, and the Stock class only.
+- `render/` implements spline track mesh, prop instancer, PBR materials, baked lightmap pipeline.
+- Sector 18 ships as JSON + lightmap.
+- Race FSM through Grid → Countdown → Running → Paused → Finish → Results. One AI rival.
+- Spark Burst is the only pickup implemented in Phase 1, so the pickup pipeline is exercised end to end without Phase 2's balance work.
+- Title, Pause, Results overlays. HUD with lap / place / timer / pickup / speed.
+- **Exit:** replaces the current alpha with a shipping-grade single-track experience on desktop and mobile, meeting the full §6.5 performance budget on Sector 18 with one AI rival and Spark Burst pickups active.
+
+### 11.2 Phase 2 — Content + modes
+
+- Aisle Nine and Driftwood Patio ship. Four cars total across Rookie + Stock + Muscle.
+- Full pickup roster implemented with balancing tuned by playtest.
+- Time Trial mode with local ghost and replay recording.
+- Audio pass: engine, skid, pickups, ambient.
+- Menu flow: title → track select → car select → race.
+- **Exit:** three tracks, pickup drama, four cars, time-trial-vs-own-ghost.
+
+### 11.3 Phase 3 — Championship + Battle Tag + async ghosts
+
+- Workshop Floor and Wing C ship. Pro class unlocked. Championship + save.
+- Battle Tag mode.
+- Mirrored and reversed track variants unlocked through championship progression.
+- Cloudflare Worker + KV ghost upload/download wired up. Turnstile integrated.
+- Settings menu with volume, graphics presets (low / medium / high), input rebinds.
+- **Exit:** full championship with unlocks, friend ghosts, battle mode.
+
+### 11.4 Phase 4 — Polish and optional editor
+
+- FX polish, additional Pro-tier cars, additional paint slots.
+- Accessibility pass (colour-blind palette, reduced-motion mode, caption beds).
+- Track editor only if still desired after Phase 3 telemetry.
+
+## 12. Anti-patterns
+
+- Referencing, copying, or closely paraphrasing any shipped track layout, car body, HUD arrangement, or pickup from any commercial title.
+- Re-introducing a single monolithic file that grows past 800 lines.
+- Coupling sim to Three.js for any reason.
+- Polling sim state from DOM handlers instead of routing through the event bus.
+- Shipping per-track content as code instead of data.
+- Tuning handling before Sector 18 art is final in Phase 1, or before all five tracks exist in Phase 3.
+- Adding pickups or cars beyond the defined roster inside Phase 1–3 without explicit design review.
+
+## 13. Open questions
+
+None blocking implementation. Items below are tuning decisions best made during the relevant phase and are deliberately not pre-decided:
+
+- Exact tire curve peaks per class (tuned in Phase 1 playtest).
+- Rubber-banding band widths per difficulty (tuned in Phase 2 playtest).
+- Pickup balance weights (tuned in Phase 2 playtest).
+- Championship points schedule (tuned in Phase 3).
+- Whether ghost uploads require Turnstile from first release or only after abuse is observed (decide in Phase 3).
+
+## 14. Definition of done
+
+The project is complete when every Success Criterion in §3 is satisfied on a fresh deploy, all tests in §10 pass in CI for five consecutive runs, and the Phase 3 exit criteria are met. Phase 4 items are welcome but not required for "done."
