@@ -52,21 +52,33 @@ npm run build
 npm audit
 ```
 
-## Cloudflare Pages
+## Cloudflare Deploy
 
-Use these settings in Cloudflare Pages:
+This repo is ready for both `Cloudflare Pages` and `Cloudflare Workers Builds`.
+
+### Pages
 
 - Framework preset: `None`
 - Build command: `npm run build`
 - Build output directory: `dist`
 - Node.js version: `22`
 
-The repo already includes `wrangler.toml` with `pages_build_output_dir = "./dist"`, so you can either configure Pages in the dashboard or deploy with Wrangler.
+### Workers Builds
 
-You can also deploy with Wrangler after authenticating:
+- Worker / project name: `mini-rc-racer`
+- Production branch: `main`
+- Build command: `npm run build`
+- Deploy command: `npx wrangler deploy`
+- Non-production branch deploy command: `npx wrangler versions upload`
+- Root directory / path: `/`
+- Build variables: none required
+
+The repo includes a `wrangler.toml` that pins the Worker name and points static assets at `./dist`, which matches the dashboard settings above.
+
+You can also deploy manually with Wrangler after authenticating:
 
 ```bash
-npx wrangler pages deploy dist --project-name mini-rc-racer
+npx wrangler deploy
 ```
 
 ## Next milestones
