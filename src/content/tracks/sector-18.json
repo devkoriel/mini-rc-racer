@@ -1,0 +1,69 @@
+{
+  "id": "sector-18",
+  "displayName": "Sector 18",
+  "fantasy": "A quiet suburban cul-de-sac where parked sedans and driveways turn into racing furniture.",
+  "recommendedClass": "stock",
+  "spline": [
+    { "x":  0.0, "y": 0.0, "z":  0.0, "halfWidth": 3.2 },
+    { "x":  8.0, "y": 0.0, "z":  2.0, "halfWidth": 3.2 },
+    { "x": 14.0, "y": 0.0, "z":  6.0, "halfWidth": 3.0 },
+    { "x": 16.0, "y": 0.0, "z": 13.0, "halfWidth": 2.8 },
+    { "x": 12.0, "y": 0.0, "z": 19.0, "halfWidth": 3.0 },
+    { "x":  5.0, "y": 0.0, "z": 22.0, "halfWidth": 3.2 },
+    { "x": -3.0, "y": 0.0, "z": 21.0, "halfWidth": 3.2 },
+    { "x": -9.0, "y": 0.0, "z": 17.0, "halfWidth": 2.8 },
+    { "x":-12.0, "y": 0.0, "z": 10.0, "halfWidth": 3.0 },
+    { "x":-10.0, "y": 0.0, "z":  3.0, "halfWidth": 3.2 },
+    { "x": -6.0, "y": 0.0, "z": -2.0, "halfWidth": 3.2 },
+    { "x":  0.0, "y": 0.0, "z": -3.0, "halfWidth": 3.2 }
+  ],
+  "surfaces": {
+    "road":     { "innerOffset": 0.0, "outerOffset": 0.0 },
+    "curb":     { "innerOffset": 0.0, "outerOffset": 0.4 },
+    "sidewalk": { "innerOffset": 0.4, "outerOffset": 1.8 },
+    "verge":    { "innerOffset": 1.8, "outerOffset": 7.0 }
+  },
+  "props": [
+    { "propId": "house-block",  "position": [ 16, 0,  3], "rotation": -0.4, "scaleBucket": "medium", "meshAsset": "meshes/props/house_block.glb" },
+    { "propId": "house-block",  "position": [ 20, 0, 12], "rotation":  0.1, "scaleBucket": "large",  "meshAsset": "meshes/props/house_block.glb" },
+    { "propId": "house-block",  "position": [ 10, 0, 24], "rotation":  0.7, "scaleBucket": "medium", "meshAsset": "meshes/props/house_block.glb" },
+    { "propId": "house-block",  "position": [ -6, 0, 26], "rotation":  1.1, "scaleBucket": "medium", "meshAsset": "meshes/props/house_block.glb" },
+    { "propId": "house-block",  "position": [-16, 0, 10], "rotation":  1.7, "scaleBucket": "medium", "meshAsset": "meshes/props/house_block.glb" },
+    { "propId": "house-block",  "position": [-14, 0, -2], "rotation":  2.4, "scaleBucket": "medium", "meshAsset": "meshes/props/house_block.glb" },
+    { "propId": "house-block",  "position": [ -2, 0, -8], "rotation":  3.0, "scaleBucket": "large",  "meshAsset": "meshes/props/house_block.glb" },
+    { "propId": "parked-sedan", "position": [ 10, 0,  0], "rotation":  0.1, "scaleBucket": "medium", "meshAsset": "meshes/props/parked_sedan.glb" },
+    { "propId": "parked-sedan", "position": [ 18, 0,  9], "rotation": -0.3, "scaleBucket": "medium", "meshAsset": "meshes/props/parked_sedan.glb" },
+    { "propId": "parked-sedan", "position": [ -7, 0, 18], "rotation":  0.9, "scaleBucket": "medium", "meshAsset": "meshes/props/parked_sedan.glb" },
+    { "propId": "parked-sedan", "position": [-11, 0,  0], "rotation":  2.3, "scaleBucket": "medium", "meshAsset": "meshes/props/parked_sedan.glb" },
+    { "propId": "tree-conifer", "position": [ 13, 0, 18], "rotation":  0.0, "scaleBucket": "large",  "meshAsset": "meshes/props/tree_conifer.glb" },
+    { "propId": "tree-conifer", "position": [ -9, 0, 22], "rotation":  0.0, "scaleBucket": "medium", "meshAsset": "meshes/props/tree_conifer.glb" },
+    { "propId": "tree-conifer", "position": [-13, 0,  5], "rotation":  0.0, "scaleBucket": "large",  "meshAsset": "meshes/props/tree_conifer.glb" },
+    { "propId": "tree-conifer", "position": [  4, 0, 25], "rotation":  0.0, "scaleBucket": "medium", "meshAsset": "meshes/props/tree_conifer.glb" },
+    { "propId": "street-light", "position": [  5, 0,  1], "rotation":  0.0, "scaleBucket": "small",  "meshAsset": "meshes/props/street_light.glb" },
+    { "propId": "street-light", "position": [ 15, 0, 10], "rotation":  0.0, "scaleBucket": "small",  "meshAsset": "meshes/props/street_light.glb" },
+    { "propId": "street-light", "position": [  2, 0, 22], "rotation":  0.0, "scaleBucket": "small",  "meshAsset": "meshes/props/street_light.glb" },
+    { "propId": "street-light", "position": [-11, 0, 12], "rotation":  0.0, "scaleBucket": "small",  "meshAsset": "meshes/props/street_light.glb" },
+    { "propId": "street-light", "position": [ -4, 0, -4], "rotation":  0.0, "scaleBucket": "small",  "meshAsset": "meshes/props/street_light.glb" },
+    { "propId": "mailbox",      "position": [  7, 0,  3], "rotation":  0.0, "scaleBucket": "small",  "meshAsset": "meshes/props/mailbox.glb" },
+    { "propId": "mailbox",      "position": [ 16, 0,  9], "rotation":  0.0, "scaleBucket": "small",  "meshAsset": "meshes/props/mailbox.glb" },
+    { "propId": "mailbox",      "position": [ -7, 0, 19], "rotation":  0.0, "scaleBucket": "small",  "meshAsset": "meshes/props/mailbox.glb" },
+    { "propId": "bin",          "position": [ 10, 0, -2], "rotation":  0.0, "scaleBucket": "small",  "meshAsset": "meshes/props/bin.glb" },
+    { "propId": "bin",          "position": [-11, 0,  7], "rotation":  0.0, "scaleBucket": "small",  "meshAsset": "meshes/props/bin.glb" },
+    { "propId": "fence-post",   "position": [  3, 0, 25], "rotation":  0.0, "scaleBucket": "small",  "meshAsset": "meshes/props/fence_post.glb" },
+    { "propId": "fence-post",   "position": [ -2, 0, 25], "rotation":  0.0, "scaleBucket": "small",  "meshAsset": "meshes/props/fence_post.glb" },
+    { "propId": "fence-post",   "position": [ -7, 0, 24], "rotation":  0.0, "scaleBucket": "small",  "meshAsset": "meshes/props/fence_post.glb" },
+    { "propId": "cone",         "position": [  0, 0, -2], "rotation":  0.0, "scaleBucket": "small",  "meshAsset": "meshes/props/cone.glb" },
+    { "propId": "cone",         "position": [  2, 0, -2], "rotation":  0.0, "scaleBucket": "small",  "meshAsset": "meshes/props/cone.glb" }
+  ],
+  "pickups": [
+    { "progress": 0.35, "sideOffset": 0.0 }
+  ],
+  "checkpoints": [0.25, 0.5, 0.75],
+  "lightmapAtlas": "neutral.png",
+  "lighting": {
+    "sunDirection": [0.4, 0.8, 0.2],
+    "hemisphereSky": "#b4d4e8",
+    "hemisphereGround": "#4a3828",
+    "fogDensity": 0.014
+  }
+}

@@ -4,6 +4,7 @@ import {
   CarSchema,
   PickupRosterSchema,
 } from "../../src/data/schemas";
+import sector18 from "../../src/content/tracks/sector-18.json";
 
 const VALID_TRACK = {
   id: "sector-18",
@@ -273,13 +274,15 @@ describe("TrackSchema with mesh assets", () => {
   it("accepts a prop with meshAsset", () => {
     const withAsset = {
       ...VALID_TRACK,
-      props: [{
-        propId: "mailbox",
-        position: [0, 0, 0],
-        rotation: 0,
-        scaleBucket: "small",
-        meshAsset: "meshes/props/mailbox.glb"
-      }]
+      props: [
+        {
+          propId: "mailbox",
+          position: [0, 0, 0],
+          rotation: 0,
+          scaleBucket: "small",
+          meshAsset: "meshes/props/mailbox.glb",
+        },
+      ],
     };
     const parsed = TrackSchema.parse(withAsset);
     expect(parsed.props[0].meshAsset).toBe("meshes/props/mailbox.glb");
@@ -288,19 +291,24 @@ describe("TrackSchema with mesh assets", () => {
   it("rejects a meshAsset path that does not end in .glb", () => {
     const bad = {
       ...VALID_TRACK,
-      props: [{
-        propId: "mailbox",
-        position: [0, 0, 0],
-        rotation: 0,
-        scaleBucket: "small",
-        meshAsset: "meshes/props/mailbox.obj"
-      }]
+      props: [
+        {
+          propId: "mailbox",
+          position: [0, 0, 0],
+          rotation: 0,
+          scaleBucket: "small",
+          meshAsset: "meshes/props/mailbox.obj",
+        },
+      ],
     };
     expect(() => TrackSchema.parse(bad)).toThrow();
   });
 
   it("accepts a ktx2 lightmap atlas", () => {
-    const withKtx2 = { ...VALID_TRACK, lightmapAtlas: "lightmaps/sector-18.ktx2" };
+    const withKtx2 = {
+      ...VALID_TRACK,
+      lightmapAtlas: "lightmaps/sector-18.ktx2",
+    };
     const parsed = TrackSchema.parse(withKtx2);
     expect(parsed.lightmapAtlas).toBe("lightmaps/sector-18.ktx2");
   });
@@ -313,8 +321,8 @@ describe("CarSchema with mesh + texture assets", () => {
       meshAsset: "meshes/cars/boulevard.glb",
       textures: {
         paintMap: "cars/boulevard_paint.ktx2",
-        roughnessMap: "cars/boulevard_rough.ktx2"
-      }
+        roughnessMap: "cars/boulevard_rough.ktx2",
+      },
     };
     const parsed = CarSchema.parse(withAssets);
     expect(parsed.meshAsset).toBe("meshes/cars/boulevard.glb");
@@ -324,8 +332,17 @@ describe("CarSchema with mesh + texture assets", () => {
   it("rejects a car texture path that does not end in .ktx2", () => {
     const bad = {
       ...VALID_CAR,
-      textures: { paintMap: "cars/paint.png" }
+      textures: { paintMap: "cars/paint.png" },
     };
     expect(() => CarSchema.parse(bad)).toThrow();
+  });
+});
+
+describe("Sector 18 content", () => {
+  it("parses through TrackSchema", () => {
+    const parsed = TrackSchema.parse(sector18);
+    expect(parsed.id).toBe("sector-18");
+    expect(parsed.props.length).toBeGreaterThan(20);
+    expect(parsed.props.every((p) => p.meshAsset?.endsWith(".glb"))).toBe(true);
   });
 });
