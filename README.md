@@ -1,29 +1,45 @@
 # Mini RC Racer
 
-`Mini RC Racer` is a clean-room browser toy-car racer built for modern browsers. It targets the same late-90s RC arcade feeling people remember, but it does so with original code, original art direction, and a legal public-repo path instead of shipping `Re-Volt` content.
+A clean-room, browser-native arcade RC racer. Tiny cars, oversized everyday spaces, low chase camera, three-lap races with pickups. Tier 3 package target: 5 tracks, 4 classes / 8 cars, 6 pickups, Race / Time Trial / Battle Tag / Championship, async ghost sharing on Cloudflare.
 
-## What is in this repo
+This is the Phase 1 alpha: **Sector 18 only, Stock-class `Boulevard` only, Spark Burst pickup only, one AI rival**. Phases 2-4 add Aisle Nine, Driftwood Patio, Workshop Floor, Wing C, Rookie / Muscle / Pro cars, and the rest of the pickup roster.
 
-- Responsive browser game shell with desktop and mobile layouts
-- Real WebGL 3D chase-camera renderer using `Three.js`
-- One playable `Maple Block` suburban circuit with boost pickups and a rival car
-- Rival AI that follows the racing line
-- Race countdown, HUD telemetry, and persistent best laps
-- Keyboard, touch, tilt, and gamepad support in the same build
-- In-page control options for touch steering mode and motion access
-- A clean-room analysis brief in `docs/clean-room-analysis.md`
-- Vite + TypeScript setup for local development
-- GitHub Actions CI for typecheck, test, and production build
-- Cloudflare Pages-ready output via `wrangler.toml`
+See:
+- Design spec: `docs/superpowers/specs/2026-04-23-rc-racer-uplift-design.plan`
+- Phase 1 plan: `docs/superpowers/plans/2026-04-23-phase-1-engine-reset.plan`
+- Amendment A (Blender + UI uplift): `docs/superpowers/plans/2026-04-23-phase-1-amendment-a-blender-ui.plan`
+- Modeling briefs: `docs/superpowers/modeling-briefs/`
 
-## Planning Docs
+## Architecture
 
-- Design vision: `docs/design-vision.md`
-- Clean-room guardrails: `docs/clean-room-analysis.md`
-- Vertical slice plan: `plans/mini-rc-racer-vertical-slice.md`
-- Maple Block brief: `docs/maple-block-brief.md`
-- HUD and shell brief: `docs/hud-shell-brief.md`
-- Prioritized backlog: `docs/implementation-backlog.md`
+```
+src/
+  app.ts            entry — boots engine + screens + race loop
+  engine/           loop, input, audio, events, assets (GLTF / KTX2 / Meshopt)
+  sim/              physics, car, AI, pickups, race FSM, track runtime (renderer-agnostic)
+  render/           Three.js scene, track mesh, instanced props, car mesh, camera, FX, HUD
+  ui/               title / track-select / car-select screens, overlay, mobile controls
+  content/          tracks / cars / pickups as JSON (Zod-validated), lightmap atlases
+  data/             schemas + settings / best-lap storage
+  util/math.ts      Vec3, Catmull-Rom spline, curvature, closest-point
+  worker/           Cloudflare Worker scaffold (Phase 3 enables ghost endpoints)
+```
+
+Sim never imports Three. Render reads sim snapshots, never mutates them. Every file stays ≤ 600 lines.
+
+## Blender asset pipeline
+
+Props and pickups are authored by headless Blender Python scripts at `tools/blender/`. Hero cars are hand-modeled following the briefs in `docs/superpowers/modeling-briefs/`.
+
+```bash
+# One-off: install Blender + dependencies
+brew install --cask blender
+
+# Rebuild props + pickups (writes to public/content/meshes/)
+npm run assets:build
+```
+
+Hand-modeled GLBs go in `public/content/meshes/cars/`. Both locations are `.gitignored` — the pipeline rebuilds procedural assets on demand; hand-modeled assets live outside git.
 
 ## Local development
 
@@ -32,16 +48,14 @@ npm install
 npm run dev
 ```
 
-Open the local Vite URL, usually `http://localhost:4173`.
+## Controls
 
-Controls:
-
-- `WASD` or arrows to steer and drive
-- `Space` to start or replay
-- `R` to reset from the grid or finish state
-- Touch buttons on mobile
-- Tilt steering on supported mobile browsers after sensor permission
-- Standard gamepad support with stick or D-pad plus triggers
+- `WASD` / arrows — drive and steer
+- `Space` — advance through menus, then fire pickup during race
+- `P` — pause / resume
+- `R` — restart from grid
+- Touch: on-screen buttons (and optional tilt steering on supported mobile)
+- Gamepad: left stick / D-pad steer, triggers drive, Start launches
 
 ## Verification
 
@@ -49,40 +63,16 @@ Controls:
 npm run typecheck
 npm test
 npm run build
-npm audit
+npm run e2e
 ```
 
-## Cloudflare Deploy
+## Cloudflare deploy
 
-This repo is ready for both `Cloudflare Pages` and `Cloudflare Workers Builds`.
+- Pages: `npm run build` → `dist/`
+- Workers: `npx wrangler deploy`
 
-### Pages
+The repo includes `wrangler.toml` pinning the worker name and pointing static assets at `./dist`.
 
-- Framework preset: `None`
-- Build command: `npm run build`
-- Build output directory: `dist`
-- Node.js version: `22`
+## Status
 
-### Workers Builds
-
-- Worker / project name: `mini-rc-racer`
-- Production branch: `main`
-- Build command: `npm run build`
-- Deploy command: `npx wrangler deploy`
-- Non-production branch deploy command: `npx wrangler versions upload`
-- Root directory / path: `/`
-- Build variables: none required
-
-The repo includes a `wrangler.toml` that pins the Worker name and points static assets at `./dist`, which matches the dashboard settings above.
-
-You can also deploy manually with Wrangler after authenticating:
-
-```bash
-npx wrangler deploy
-```
-
-## Next milestones
-
-1. Add a title screen, pause menu, and options flow that feel like a shipping game.
-2. Add more tracks, stronger collision dressing, and better rival behavior.
-3. Layer in audio, better materials, and device QA for a real public alpha.
+Phase 1 ships Sector 18 with one rival and one pickup, meeting the performance budget in §6.5 of the design spec. Phase 2-4 will land on top of this.
