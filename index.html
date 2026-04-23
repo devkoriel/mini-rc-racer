@@ -44,31 +44,34 @@
               aria-label="Mini RC Racer track"
             ></canvas>
 
-            <section class="stats" aria-label="Race telemetry">
-              <article class="stat-card">
-                <span>Lap</span>
-                <strong id="lap-value">1 / 3</strong>
-              </article>
-              <article class="stat-card">
-                <span>Place</span>
-                <strong id="place-value">1 / 2</strong>
-              </article>
-              <article class="stat-card">
-                <span>Speed</span>
-                <strong id="speed-value">0 km/h</strong>
-              </article>
-              <article class="stat-card">
-                <span>Boost</span>
-                <strong id="boost-value">Find a pickup</strong>
-              </article>
-              <article class="stat-card">
-                <span>Timer</span>
-                <strong id="timer-value">00:00.00</strong>
-              </article>
-              <article class="stat-card">
-                <span>Best</span>
-                <strong id="best-value">--:--.--</strong>
-              </article>
+            <section class="hud" aria-label="Race telemetry">
+              <div class="hud__primary">
+                <div class="hud__timer" id="timer-value">00:00.00</div>
+                <div class="hud__chip hud__chip--best">
+                  <span class="hud__chip-label">BEST</span>
+                  <strong class="hud__chip-value hud__chip-value--mono" id="best-value">—:——.——</strong>
+                </div>
+              </div>
+              <div class="hud__secondary">
+                <div class="hud__chip">
+                  <span class="hud__chip-label">LAP</span>
+                  <strong class="hud__chip-value" id="lap-value">1/3</strong>
+                </div>
+                <div class="hud__chip">
+                  <span class="hud__chip-label">PLACE</span>
+                  <strong class="hud__chip-value" id="place-value">1/2</strong>
+                </div>
+                <div class="hud__speed">
+                  <span class="hud__chip-label">SPEED</span>
+                  <div class="hud__speed-bar" id="speed-bar"></div>
+                  <strong class="hud__speed-value" id="speed-value">0</strong>
+                  <span class="hud__speed-unit">km/h</span>
+                </div>
+                <div class="hud__pickup" id="pickup-slot" data-state="empty">
+                  <span class="hud__chip-label">PICKUP</span>
+                  <strong class="hud__pickup-name" id="boost-value">Find a pickup</strong>
+                </div>
+              </div>
             </section>
 
             <div class="overlay-panel" id="overlay-panel" role="status" aria-live="polite">

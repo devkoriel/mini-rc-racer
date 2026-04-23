@@ -165,6 +165,252 @@ canvas {
   letter-spacing: -0.04em;
 }
 
+/* ===== HUD ===== */
+
+.hud {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  display: grid;
+  grid-template-rows: auto auto;
+  gap: 6px;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.hud__primary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px 12px;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-backdrop);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  border-radius: var(--radius-lg);
+}
+
+.hud__timer {
+  flex: 1;
+  font-family: var(--font-display);
+  font-size: var(--size-display-lg);
+  font-weight: var(--weight-display);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  color: var(--color-ink);
+}
+
+.hud__secondary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-backdrop);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  border-radius: var(--radius-lg);
+}
+
+.hud__chip {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  position: relative;
+  background: color-mix(in oklch, var(--color-surface-2) 48%, transparent);
+}
+
+.hud__chip::before {
+  content: "";
+  position: absolute;
+  inset: 4px auto 4px 0;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--color-accent);
+  opacity: 0.6;
+}
+
+.hud__chip--best {
+  min-width: 120px;
+}
+
+.hud__chip--best::before {
+  background: var(--color-go);
+}
+
+.hud__chip-label {
+  font-family: var(--font-mono);
+  font-size: var(--size-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: color-mix(in oklch, var(--color-accent) 72%, transparent);
+  line-height: 1;
+}
+
+.hud__chip-value {
+  display: block;
+  font-family: var(--font-display);
+  font-size: var(--size-body-lg);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  color: var(--color-ink);
+  line-height: 1.1;
+}
+
+.hud__chip-value--mono {
+  font-family: var(--font-mono);
+  font-size: var(--size-body);
+  letter-spacing: 0;
+}
+
+/* Speed composite */
+
+.hud__speed {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px;
+  min-width: 140px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--color-surface-2) 48%, transparent);
+}
+
+.hud__speed-bar {
+  --speed-pct: 0;
+  width: 100%;
+  height: 6px;
+  background: color-mix(in oklch, var(--color-ink) 18%, transparent);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+
+.hud__speed-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: calc(var(--speed-pct) * 100%);
+  background: linear-gradient(
+    90deg,
+    var(--color-accent) 0%,
+    var(--color-accent-strong) 100%
+  );
+  transition: width var(--dur-fast) linear;
+}
+
+.hud__speed-value {
+  font-family: var(--font-display);
+  font-size: var(--size-body-lg);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  color: var(--color-ink);
+  line-height: 1;
+}
+
+.hud__speed-unit {
+  font-family: var(--font-mono);
+  font-size: var(--size-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--color-ink-dim);
+  line-height: 1;
+}
+
+/* Pickup slot */
+
+.hud__pickup {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--color-surface-2) 48%, transparent);
+  border: 1px solid transparent;
+  transition:
+    border-color var(--dur-base) var(--ease-out-expo),
+    background var(--dur-base) var(--ease-out-expo),
+    box-shadow var(--dur-base) var(--ease-out-expo);
+  min-width: 110px;
+}
+
+.hud__pickup[data-state="armed"] {
+  border-color: color-mix(in oklch, var(--color-accent) 55%, transparent);
+  background: color-mix(in oklch, var(--color-accent) 14%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--color-accent) 22%, transparent),
+    0 0 18px color-mix(in oklch, var(--color-accent) 28%, transparent);
+  animation: hud-pickup-pulse var(--dur-slow) var(--ease-out-expo) infinite alternate;
+}
+
+.hud__pickup[data-state="active"] {
+  border-color: color-mix(in oklch, var(--color-accent-strong) 80%, transparent);
+  background: color-mix(in oklch, var(--color-accent-strong) 20%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--color-accent-strong) 38%, transparent),
+    0 0 24px color-mix(in oklch, var(--color-accent-strong) 38%, transparent);
+}
+
+@keyframes hud-pickup-pulse {
+  from {
+    box-shadow: 0 0 0 1px color-mix(in oklch, var(--color-accent) 22%, transparent),
+      0 0 10px color-mix(in oklch, var(--color-accent) 18%, transparent);
+  }
+  to {
+    box-shadow: 0 0 0 1px color-mix(in oklch, var(--color-accent) 44%, transparent),
+      0 0 28px color-mix(in oklch, var(--color-accent) 36%, transparent);
+  }
+}
+
+.hud__pickup-name {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--size-body-sm);
+  color: var(--color-ink);
+  line-height: 1.2;
+  transition: color var(--dur-base) var(--ease-out-expo);
+}
+
+.hud__pickup[data-state="armed"] .hud__pickup-name,
+.hud__pickup[data-state="active"] .hud__pickup-name {
+  color: var(--color-accent-strong);
+}
+
+/* HUD responsive */
+
+@media (max-width: 980px) {
+  .hud {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+  }
+
+  .hud__primary {
+    padding: 8px 12px 10px;
+  }
+}
+
+@media (max-width: 640px) {
+  .hud {
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+  }
+
+  .hud__timer {
+    font-size: var(--size-display-md);
+  }
+
+  .hud__secondary {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 10px;
+  }
+}
+
+/* ===== END HUD ===== */
+
 .stage {
   position: relative;
   overflow: hidden;
