@@ -1,0 +1,40 @@
+# Blender Asset Pipeline
+
+## What this produces
+
+`npm run assets:build` runs Blender headlessly and writes `.glb` files into
+`public/content/meshes/{props,pickups,cars}/` that the game loads at runtime.
+
+## What Blender needs
+
+- Blender 4.x on macOS (tested with the `.app` bundle).
+- `BLENDER_BIN` env var pointing at the CLI binary if `blender` is not on PATH:
+  ```
+  export BLENDER_BIN=/Applications/Blender.app/Contents/MacOS/Blender
+  ```
+
+## What you hand-author
+
+- `public/content/meshes/cars/boulevard.glb`
+- Any future hero car (Sparky, Pillbox, Dustdevil, Overkill, Turnpike, Cyan Arrow, Ember 9).
+
+Modeling briefs live in `docs/superpowers/modeling-briefs/<carId>.plan`.
+
+## What is auto-generated
+
+- Props: mailbox, bin, cone, fence_post, tree_conifer, street_light, parked_sedan, house_block.
+- Pickups: spark_burst.
+
+## Clean-room rules
+
+- No geometry traced from shipped games.
+- Every car is a fresh silhouette designed here.
+- Every prop is a fresh model authored here.
+
+## Troubleshooting
+
+If `npm run assets:build` can't find Blender:
+```
+brew install --cask blender
+# or download from blender.org and install into /Applications/
+```
