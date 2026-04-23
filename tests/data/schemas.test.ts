@@ -346,3 +346,22 @@ describe("Sector 18 content", () => {
     expect(parsed.props.every((p) => p.meshAsset?.endsWith(".glb"))).toBe(true);
   });
 });
+
+import boulevard from "../../src/content/cars/boulevard.json";
+import pickupsRoster from "../../src/content/pickups.json";
+
+describe("Boulevard content", () => {
+  it("parses through CarSchema", () => {
+    const parsed = CarSchema.parse(boulevard);
+    expect(parsed.class).toBe("stock");
+    expect(parsed.meshAsset).toBe("meshes/cars/boulevard.glb");
+  });
+});
+
+describe("pickup roster content", () => {
+  it("parses through PickupRosterSchema", () => {
+    const parsed = PickupRosterSchema.parse(pickupsRoster);
+    expect(parsed.pickups).toHaveLength(1);
+    expect(parsed.pickups[0].id).toBe("spark-burst");
+  });
+});

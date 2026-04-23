@@ -1,0 +1,23 @@
+{
+  "id": "boulevard",
+  "displayName": "Boulevard",
+  "class": "stock",
+  "silhouette": "wedge-coupe",
+  "tuning": {
+    "mass": 1.2,
+    "wheelbase": 0.22,
+    "trackWidth": 0.14,
+    "cgHeight": 0.05,
+    "gripCeiling": 1.0,
+    "torqueCurve": [[0, 0.4], [0.5, 1.0], [1.0, 0.65]],
+    "downforce": 0.2,
+    "brakeStrength": 1.0,
+    "steerAssist": 0.3
+  },
+  "cosmetic": {
+    "paintSlots": ["#e0c874", "#20242a"],
+    "wheelSlot": "slick",
+    "antenna": "flag"
+  },
+  "meshAsset": "meshes/cars/boulevard.glb"
+}

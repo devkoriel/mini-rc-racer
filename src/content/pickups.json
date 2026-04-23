@@ -1,0 +1,16 @@
+{
+  "pickups": [
+    {
+      "id": "spark-burst",
+      "displayName": "Spark Burst",
+      "rarity": 1.0,
+      "classTier": "rookie",
+      "effect": {
+        "kind": "boost",
+        "duration": 2.0,
+        "throttleMultiplier": 1.6,
+        "gripMultiplier": 1.15
+      }
+    }
+  ]
+}
