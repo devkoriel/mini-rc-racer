@@ -411,6 +411,516 @@ canvas {
 
 /* ===== END HUD ===== */
 
+/* ===== Screens ===== */
+
+.screens {
+  position: relative;
+  overflow: hidden;
+  border-radius: 28px;
+  border: 1px solid var(--glass-border);
+  background: var(--color-surface-1);
+  box-shadow: var(--glass-shadow);
+  min-height: min(86vh, 1180px);
+}
+
+.screen {
+  display: none;
+  width: 100%;
+  min-height: min(86vh, 1180px);
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity var(--dur-base) var(--ease-out-expo),
+    transform var(--dur-base) var(--ease-out-expo);
+}
+
+/* Show only the screen matching the current data-screen on .screens */
+.screens[data-screen="title"]       [data-screen-name="title"],
+.screens[data-screen="track-select"] [data-screen-name="track-select"],
+.screens[data-screen="car-select"]  [data-screen-name="car-select"],
+.screens[data-screen="race"]        [data-screen-name="race"] {
+  display: flex;
+  flex-direction: column;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ---- Title screen ---- */
+
+.screen--title {
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  padding: clamp(40px, 8vh, 100px) 32px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.screen__stripe {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 6px;
+  background: linear-gradient(
+    180deg,
+    var(--color-accent) 0%,
+    var(--color-accent-strong) 50%,
+    var(--color-accent) 100%
+  );
+  opacity: 0.9;
+}
+
+.screen__eyebrow {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--size-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.3em;
+  color: var(--color-accent);
+}
+
+.screen__display {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--size-display-xl);
+  font-weight: var(--weight-display);
+  line-height: 0.88;
+  letter-spacing: -0.06em;
+  color: var(--color-ink);
+}
+
+.screen__subtitle {
+  margin: 0;
+  max-width: 40ch;
+  font-size: var(--size-body);
+  line-height: 1.45;
+  color: var(--color-ink-dim);
+}
+
+.screen__cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 28px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklch, var(--color-accent) 60%, transparent);
+  background: color-mix(in oklch, var(--color-accent) 18%, transparent);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: var(--size-body-lg);
+  font-weight: var(--weight-bold);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out-expo),
+    transform var(--dur-fast) var(--ease-out-expo),
+    box-shadow var(--dur-fast) var(--ease-out-expo);
+}
+
+.screen__cta:hover {
+  background: color-mix(in oklch, var(--color-accent) 28%, transparent);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px color-mix(in oklch, var(--color-accent) 28%, transparent);
+}
+
+.screen__cta:active {
+  transform: scale(0.98);
+}
+
+.screen__cta--primary {
+  background: color-mix(in oklch, var(--color-accent) 30%, transparent);
+  border-color: color-mix(in oklch, var(--color-accent) 80%, transparent);
+}
+
+.screen__cta-label {
+  /* label portion inherits parent font */
+}
+
+.screen__cta-hint {
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in oklch, var(--color-ink) 22%, transparent);
+  background: color-mix(in oklch, var(--color-surface-3) 70%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--size-caption);
+  letter-spacing: 0.1em;
+  color: var(--color-ink-dim);
+}
+
+.screen__meta {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--size-caption);
+  letter-spacing: 0.1em;
+  color: var(--color-ink-faint);
+  text-transform: uppercase;
+}
+
+/* ---- Select screens (track / car) ---- */
+
+.screen--select {
+  padding: clamp(28px, 5vh, 64px) clamp(24px, 4vw, 64px);
+  gap: 28px;
+  overflow-y: auto;
+}
+
+.screen__header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.screen__kicker {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--size-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.28em;
+  color: var(--color-accent);
+}
+
+.screen__display-sm {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--size-display-lg);
+  font-weight: var(--weight-display);
+  line-height: 0.9;
+  letter-spacing: -0.05em;
+  color: var(--color-ink);
+}
+
+.screen__back {
+  align-self: flex-start;
+  appearance: none;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  padding: 10px 20px;
+  font: inherit;
+  font-size: var(--size-body-sm);
+  letter-spacing: 0.04em;
+  color: var(--color-ink-dim);
+  background: color-mix(in oklch, var(--color-surface-2) 60%, transparent);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out-expo);
+}
+
+.screen__back:hover {
+  background: color-mix(in oklch, var(--color-surface-3) 70%, transparent);
+  color: var(--color-ink);
+}
+
+.screen__actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: auto;
+}
+
+/* ---- Track grid ---- */
+
+.track-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.track-card {
+  display: grid;
+  grid-template-rows: 140px auto;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: var(--glass-backdrop);
+  overflow: hidden;
+  cursor: default;
+  transition:
+    transform var(--dur-fast) var(--ease-out-expo),
+    box-shadow var(--dur-fast) var(--ease-out-expo);
+}
+
+.track-card--active {
+  cursor: pointer;
+  border-color: color-mix(in oklch, var(--color-accent) 55%, transparent);
+}
+
+.track-card--active:hover {
+  transform: translateY(-3px);
+  box-shadow:
+    var(--glass-shadow),
+    0 0 0 1px color-mix(in oklch, var(--color-accent) 38%, transparent),
+    0 12px 32px color-mix(in oklch, var(--color-accent) 20%, transparent);
+}
+
+.track-card--active:active {
+  transform: scale(0.98);
+}
+
+.track-card--locked {
+  opacity: 0.45;
+  position: relative;
+}
+
+.track-card__thumb {
+  display: block;
+  width: 100%;
+  height: 140px;
+}
+
+[data-track-thumb="sector-18"]      { background: linear-gradient(135deg, #b4d4e8, #8ea985); }
+[data-track-thumb="aisle-nine"]     { background: linear-gradient(135deg, #e8c878, #a8774a); }
+[data-track-thumb="driftwood-patio"]{ background: linear-gradient(135deg, #a8d8a0, #709060); }
+[data-track-thumb="workshop-floor"] { background: linear-gradient(135deg, #6a6a72, #383a40); }
+[data-track-thumb="wing-c"]         { background: linear-gradient(135deg, #d6c8b8, #8a7a60); }
+
+.track-card__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px 14px;
+}
+
+.track-card__title {
+  font-family: var(--font-display);
+  font-size: var(--size-body-lg);
+  font-weight: var(--weight-bold);
+  color: var(--color-ink);
+  letter-spacing: -0.02em;
+}
+
+.track-card__fantasy {
+  font-size: var(--size-body-sm);
+  color: var(--color-ink-dim);
+}
+
+.track-card__tag {
+  margin-top: 4px;
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: color-mix(in oklch, var(--color-surface-3) 60%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--size-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-faint);
+}
+
+.track-card--active .track-card__tag {
+  border-color: color-mix(in oklch, var(--color-accent) 44%, transparent);
+  background: color-mix(in oklch, var(--color-accent) 14%, transparent);
+  color: var(--color-accent);
+}
+
+/* ---- Car carousel ---- */
+
+.car-carousel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.car-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 20px;
+  width: 220px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: var(--glass-backdrop);
+  cursor: default;
+  transition:
+    transform var(--dur-fast) var(--ease-out-expo),
+    box-shadow var(--dur-fast) var(--ease-out-expo);
+}
+
+.car-card--active {
+  cursor: pointer;
+  border-color: color-mix(in oklch, var(--color-accent) 55%, transparent);
+}
+
+.car-card--active:hover {
+  transform: translateY(-3px);
+  box-shadow:
+    var(--glass-shadow),
+    0 0 0 1px color-mix(in oklch, var(--color-accent) 38%, transparent),
+    0 12px 32px color-mix(in oklch, var(--color-accent) 20%, transparent);
+}
+
+.car-card--active:active {
+  transform: scale(0.98);
+}
+
+.car-card--locked {
+  opacity: 0.45;
+}
+
+.car-card__chassis {
+  display: block;
+  width: 100%;
+  height: 100px;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--color-surface-3) 80%, transparent);
+}
+
+[data-car-chassis="boulevard"] { background: linear-gradient(135deg, #c0a870, #786040); }
+[data-car-chassis="sparky"]    { background: linear-gradient(135deg, #70a0d0, #385878); }
+[data-car-chassis="dustdevil"] { background: linear-gradient(135deg, #d09060, #704028); }
+
+.car-card__name {
+  font-family: var(--font-display);
+  font-size: var(--size-body-lg);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.02em;
+  color: var(--color-ink);
+}
+
+.car-card__class {
+  font-family: var(--font-mono);
+  font-size: var(--size-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-dim);
+}
+
+.car-card__locked {
+  margin-top: 4px;
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: color-mix(in oklch, var(--color-surface-3) 60%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--size-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-faint);
+}
+
+.car-card__stats {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.car-card__stats li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.car-card__stats li > span:first-child {
+  font-family: var(--font-mono);
+  font-size: var(--size-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-ink-faint);
+  width: 52px;
+  flex-shrink: 0;
+}
+
+.car-card__stats .bar {
+  display: block;
+  width: 120px;
+  height: 4px;
+  background: color-mix(in oklch, var(--color-ink) 15%, transparent);
+  border-radius: 999px;
+  overflow: hidden;
+  position: relative;
+}
+
+.car-card__stats .bar::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: calc(var(--v, 0) * 100%);
+  background: var(--color-accent);
+}
+
+/* ---- Race screen ---- */
+
+.screen--race {
+  /* The existing .stage fills this slot */
+  padding: 0;
+}
+
+.screen--race.screen {
+  min-height: 0; /* let .stage drive the height */
+}
+
+.screens[data-screen="race"] [data-screen-name="race"] {
+  display: block; /* override flex for race screen */
+}
+
+/* ===== Overlay variants ===== */
+
+/* Shared: data-state on the panel controls visibility */
+.overlay-panel[data-state="hidden"],
+.overlay-panel[data-visible="false"] {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-10px);
+}
+
+/* Countdown: giant number, centred, animated pop */
+.overlay-panel[data-variant="countdown"] {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: transparent;
+  border: none;
+  backdrop-filter: none;
+  box-shadow: none;
+  text-align: center;
+  max-width: none;
+}
+
+.overlay-panel[data-variant="countdown"][data-state="visible"] {
+  opacity: 1;
+  transform: translate(-50%, -50%);
+}
+
+.overlay-panel[data-variant="countdown"] .overlay-title {
+  font-size: var(--size-display-xl);
+  animation: countdown-pop var(--dur-base) var(--ease-out-back) forwards;
+}
+
+@keyframes countdown-pop {
+  from { transform: scale(0.6); opacity: 0; }
+  to   { transform: scale(1);   opacity: 1; }
+}
+
+/* Grid: glass panel, top-left (default position) */
+.overlay-panel[data-variant="grid"] {
+  border-color: color-mix(in oklch, var(--color-go) 38%, transparent);
+}
+
+/* Paused: darken stage further */
+.overlay-panel[data-variant="paused"] {
+  border-color: color-mix(in oklch, var(--color-ink) 28%, transparent);
+  background: color-mix(in oklch, var(--color-surface-1) 85%, transparent);
+}
+
+/* Finished: celebratory accent border */
+.overlay-panel[data-variant="finished"] {
+  border-color: color-mix(in oklch, var(--color-accent) 70%, transparent);
+  box-shadow:
+    var(--glass-shadow),
+    0 0 0 1px color-mix(in oklch, var(--color-accent) 30%, transparent),
+    0 0 28px color-mix(in oklch, var(--color-accent) 22%, transparent);
+}
+
+/* ===== END Screens ===== */
+
 .stage {
   position: relative;
   overflow: hidden;

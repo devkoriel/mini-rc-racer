@@ -36,67 +36,174 @@
 
       <main class="playground">
         <section class="experience">
-          <section class="stage">
-            <canvas
-              id="game-canvas"
-              width="1280"
-              height="720"
-              aria-label="Mini RC Racer track"
-            ></canvas>
+          <div class="screens" data-screen="title">
 
-            <section class="hud" aria-label="Race telemetry">
-              <div class="hud__primary">
-                <div class="hud__timer" id="timer-value">00:00.00</div>
-                <div class="hud__chip hud__chip--best">
-                  <span class="hud__chip-label">BEST</span>
-                  <strong class="hud__chip-value hud__chip-value--mono" id="best-value">—:——.——</strong>
+            <!-- Title screen -->
+            <section class="screen screen--title" data-screen-name="title">
+              <div class="screen__stripe" aria-hidden="true"></div>
+              <h1 class="screen__eyebrow">Mini RC Racer</h1>
+              <p class="screen__display">Sector 18</p>
+              <p class="screen__subtitle">Tiny cars. Giant block. Clean-room RC racing in your browser.</p>
+              <button type="button" class="screen__cta" data-action="go-track-select">
+                <span class="screen__cta-label">Press Start</span>
+                <span class="screen__cta-hint">Space</span>
+              </button>
+              <p class="screen__meta">Phase 1 alpha &middot; 1 track &middot; 1 car &middot; Spark Burst pickup</p>
+            </section>
+
+            <!-- Track select -->
+            <section class="screen screen--select" data-screen-name="track-select">
+              <header class="screen__header">
+                <p class="screen__kicker">Choose a track</p>
+                <h2 class="screen__display-sm">Circuit</h2>
+              </header>
+              <div class="track-grid">
+                <button type="button" class="track-card track-card--active" data-action="choose-track" data-track-id="sector-18">
+                  <span class="track-card__thumb" data-track-thumb="sector-18"></span>
+                  <span class="track-card__meta">
+                    <span class="track-card__title">Sector 18</span>
+                    <span class="track-card__fantasy">Suburban cul-de-sac</span>
+                    <span class="track-card__tag">Rookie / Stock</span>
+                  </span>
+                </button>
+                <div class="track-card track-card--locked" aria-disabled="true">
+                  <span class="track-card__thumb" data-track-thumb="aisle-nine"></span>
+                  <span class="track-card__meta">
+                    <span class="track-card__title">Aisle Nine</span>
+                    <span class="track-card__fantasy">Grocery service corridor</span>
+                    <span class="track-card__tag">Coming in Phase 2</span>
+                  </span>
+                </div>
+                <div class="track-card track-card--locked" aria-disabled="true">
+                  <span class="track-card__thumb" data-track-thumb="driftwood-patio"></span>
+                  <span class="track-card__meta">
+                    <span class="track-card__title">Driftwood Patio</span>
+                    <span class="track-card__fantasy">Backyard decking</span>
+                    <span class="track-card__tag">Coming in Phase 2</span>
+                  </span>
+                </div>
+                <div class="track-card track-card--locked" aria-disabled="true">
+                  <span class="track-card__thumb" data-track-thumb="workshop-floor"></span>
+                  <span class="track-card__meta">
+                    <span class="track-card__title">Workshop Floor</span>
+                    <span class="track-card__fantasy">Tool-bench garage</span>
+                    <span class="track-card__tag">Coming in Phase 3</span>
+                  </span>
+                </div>
+                <div class="track-card track-card--locked" aria-disabled="true">
+                  <span class="track-card__thumb" data-track-thumb="wing-c"></span>
+                  <span class="track-card__meta">
+                    <span class="track-card__title">Wing C</span>
+                    <span class="track-card__fantasy">Natural-history gallery</span>
+                    <span class="track-card__tag">Coming in Phase 3</span>
+                  </span>
                 </div>
               </div>
-              <div class="hud__secondary">
-                <div class="hud__chip">
-                  <span class="hud__chip-label">LAP</span>
-                  <strong class="hud__chip-value" id="lap-value">1/3</strong>
+              <button type="button" class="screen__back" data-action="back-to-title">Back</button>
+            </section>
+
+            <!-- Car select -->
+            <section class="screen screen--select" data-screen-name="car-select">
+              <header class="screen__header">
+                <p class="screen__kicker">Choose a car</p>
+                <h2 class="screen__display-sm">Vehicle</h2>
+              </header>
+              <div class="car-carousel">
+                <button type="button" class="car-card car-card--active" data-action="choose-car" data-car-id="boulevard">
+                  <span class="car-card__chassis" data-car-chassis="boulevard"></span>
+                  <span class="car-card__name">Boulevard</span>
+                  <span class="car-card__class">Stock &middot; Wedge Coupe</span>
+                  <ul class="car-card__stats">
+                    <li><span>Grip</span><span class="bar" style="--v:0.6"></span></li>
+                    <li><span>Speed</span><span class="bar" style="--v:0.55"></span></li>
+                    <li><span>Weight</span><span class="bar" style="--v:0.5"></span></li>
+                  </ul>
+                </button>
+                <div class="car-card car-card--locked" aria-disabled="true">
+                  <span class="car-card__chassis" data-car-chassis="sparky"></span>
+                  <span class="car-card__name">Sparky</span>
+                  <span class="car-card__class">Rookie &middot; Buggy</span>
+                  <span class="car-card__locked">Phase 2</span>
                 </div>
-                <div class="hud__chip">
-                  <span class="hud__chip-label">PLACE</span>
-                  <strong class="hud__chip-value" id="place-value">1/2</strong>
+                <div class="car-card car-card--locked" aria-disabled="true">
+                  <span class="car-card__chassis" data-car-chassis="dustdevil"></span>
+                  <span class="car-card__name">Dustdevil</span>
+                  <span class="car-card__class">Stock &middot; Monster</span>
+                  <span class="car-card__locked">Phase 2</span>
                 </div>
-                <div class="hud__speed">
-                  <span class="hud__chip-label">SPEED</span>
-                  <div class="hud__speed-bar" id="speed-bar"></div>
-                  <strong class="hud__speed-value" id="speed-value">0</strong>
-                  <span class="hud__speed-unit">km/h</span>
-                </div>
-                <div class="hud__pickup" id="pickup-slot" data-state="empty">
-                  <span class="hud__chip-label">PICKUP</span>
-                  <strong class="hud__pickup-name" id="boost-value">Find a pickup</strong>
-                </div>
+              </div>
+              <div class="screen__actions">
+                <button type="button" class="screen__back" data-action="back-to-track-select">Back</button>
+                <button type="button" class="screen__cta screen__cta--primary" data-action="start-race">Race</button>
               </div>
             </section>
 
-            <div class="overlay-panel" id="overlay-panel" role="status" aria-live="polite">
-              <p class="overlay-kicker" id="overlay-kicker">Grid Set</p>
-              <h2 class="overlay-title" id="overlay-title">Launch when ready</h2>
-              <p class="overlay-body" id="overlay-body">
-                Hit the battery pickups for a burst and beat the rival around the block.
-              </p>
-            </div>
+            <!-- Race screen — existing stage lives here -->
+            <section class="screen screen--race" data-screen-name="race">
+              <section class="stage">
+                <canvas
+                  id="game-canvas"
+                  width="1280"
+                  height="720"
+                  aria-label="Mini RC Racer track"
+                ></canvas>
 
-            <div class="touch-controls" aria-label="Touch controls">
-              <div class="touch-cluster touch-cluster--steer">
-                <button type="button" class="touch-btn" data-control="left">Left</button>
-                <button type="button" class="touch-btn" data-control="right">Right</button>
-              </div>
-              <div class="touch-cluster touch-cluster--drive">
-                <button type="button" class="touch-btn" data-control="brake">Brake</button>
-                <button type="button" class="touch-btn" data-control="accelerate">Gas</button>
-              </div>
-              <div class="touch-cluster touch-cluster--system">
-                <button type="button" class="touch-btn touch-btn--secondary" data-control="start">Start</button>
-                <button type="button" class="touch-btn touch-btn--secondary" data-control="restart">Reset</button>
-              </div>
-            </div>
-          </section>
+                <section class="hud" aria-label="Race telemetry">
+                  <div class="hud__primary">
+                    <div class="hud__timer" id="timer-value">00:00.00</div>
+                    <div class="hud__chip hud__chip--best">
+                      <span class="hud__chip-label">BEST</span>
+                      <strong class="hud__chip-value hud__chip-value--mono" id="best-value">—:——.——</strong>
+                    </div>
+                  </div>
+                  <div class="hud__secondary">
+                    <div class="hud__chip">
+                      <span class="hud__chip-label">LAP</span>
+                      <strong class="hud__chip-value" id="lap-value">1/3</strong>
+                    </div>
+                    <div class="hud__chip">
+                      <span class="hud__chip-label">PLACE</span>
+                      <strong class="hud__chip-value" id="place-value">1/2</strong>
+                    </div>
+                    <div class="hud__speed">
+                      <span class="hud__chip-label">SPEED</span>
+                      <div class="hud__speed-bar" id="speed-bar"></div>
+                      <strong class="hud__speed-value" id="speed-value">0</strong>
+                      <span class="hud__speed-unit">km/h</span>
+                    </div>
+                    <div class="hud__pickup" id="pickup-slot" data-state="empty">
+                      <span class="hud__chip-label">PICKUP</span>
+                      <strong class="hud__pickup-name" id="boost-value">Find a pickup</strong>
+                    </div>
+                  </div>
+                </section>
+
+                <div class="overlay-panel" id="overlay-panel" role="status" aria-live="polite">
+                  <p class="overlay-kicker" id="overlay-kicker">Grid Set</p>
+                  <h2 class="overlay-title" id="overlay-title">Launch when ready</h2>
+                  <p class="overlay-body" id="overlay-body">
+                    Hit the battery pickups for a burst and beat the rival around the block.
+                  </p>
+                </div>
+
+                <div class="touch-controls" aria-label="Touch controls">
+                  <div class="touch-cluster touch-cluster--steer">
+                    <button type="button" class="touch-btn" data-control="left">Left</button>
+                    <button type="button" class="touch-btn" data-control="right">Right</button>
+                  </div>
+                  <div class="touch-cluster touch-cluster--drive">
+                    <button type="button" class="touch-btn" data-control="brake">Brake</button>
+                    <button type="button" class="touch-btn" data-control="accelerate">Gas</button>
+                  </div>
+                  <div class="touch-cluster touch-cluster--system">
+                    <button type="button" class="touch-btn touch-btn--secondary" data-control="start">Start</button>
+                    <button type="button" class="touch-btn touch-btn--secondary" data-control="restart">Reset</button>
+                  </div>
+                </div>
+              </section>
+            </section>
+
+          </div><!-- /.screens -->
         </section>
 
         <aside class="hero-note control-dock">
