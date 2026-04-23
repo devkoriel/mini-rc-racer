@@ -1,0 +1,95 @@
+# Boulevard — Modeling Brief
+
+> **Audience:** you, hand-modeling in Blender. I will not auto-generate this car — the game needs real RC character and that comes from you.
+
+## Silhouette and fantasy
+
+An original wedge-coupe RC toy. Short wheelbase, low slung body, aggressive front-end rake, scooped rear, visible antenna post at rear-left. Must read as a "1:18-scale hobby RC" — chunky toy forms over realistic car detailing.
+
+Clean-room: do not model to any specific shipped RC car. Create an original silhouette.
+
+## Dimensions (metres, RC scale)
+
+- Length: 1.0
+- Width: 0.6
+- Height (roof): 0.44
+- Wheelbase: 0.65
+- Track width: 0.48
+- Wheel radius: 0.12
+- Ground clearance: 0.04
+
+Pivot at body centre, feet of wheels sit on y = 0.
+
+## Polycount budget
+
+- Chassis + cabin: ~1200 tri
+- Wheels (x4, shared mesh): ~300 tri each
+- Antenna: ~60 tri
+- Total: ≤ 2500 tri
+
+## Material slots (name them exactly)
+
+- `paint`   — main body colour. Data-driven tint from `cars/boulevard.json` `cosmetic.paintSlots[0]`. Runtime will scan materials whose name contains "paint" (case-insensitive) and swap the base colour.
+- `accent`  — secondary colour on cabin / scoop. Data-driven tint from `cosmetic.paintSlots[1]`.
+- `rubber`  — tyre. Flat black-grey, roughness ~0.8.
+- `chrome`  — wheel hub + bumper detail. Metallic 1.0, roughness 0.2.
+- `plastic` — antenna + interior trim.
+
+## UV layout
+
+- Smart-project body, then adjust seams on centre-line for symmetric paint.
+- Wheels: single shared UV chart, mirror-instanced (one wheel mesh, 4 transforms).
+- Keep texel density consistent across body panels so any future paint decals scale nicely.
+
+## Node naming (required for runtime)
+
+The runtime scans node names for specific strings. Name them exactly:
+
+- `chassis`  — main body node
+- `wheel_fl` — front-left wheel
+- `wheel_fr` — front-right wheel
+- `wheel_rl` — rear-left wheel
+- `wheel_rr` — rear-right wheel
+- `antenna`  — antenna rod
+
+Wheels should be their own nodes (not parented inside the chassis mesh) so the runtime can spin them around local X based on speed.
+
+## Export
+
+- Format: GLB (glTF 2.0 binary)
+- Y-up
+- Apply transforms before export
+- Save to `public/content/meshes/cars/boulevard.glb`
+- Do NOT commit the .glb (path is gitignored). The runtime loads it from the built `dist/` or `public/` directory.
+
+## Reference vocabulary (not for tracing)
+
+Look at real 1:18 RC buggies and wedge-coupe kit cars for proportion and stance. Modern toy-car racers for the cabin bubble and rear-scoop language. Do NOT trace or copy any specific product design.
+
+## Acceptance
+
+1. Loads in Three.js via `GLTFLoader` (the runtime path is wired up in `src/engine/assets.ts` and `src/render/car-mesh.ts`).
+2. Paint colour swaps correctly when `cars/boulevard.json` `paintSlots[0]` is changed from `#e0c874` to, say, `#3a8cd4`.
+3. At the default chase-camera FOV 68° and the car occupying ~10% of screen height, the car reads as a toy RC rather than a full-scale car.
+4. All four wheels are separate nodes and the runtime can rotate them without dragging the chassis along.
+5. Bundle impact: ≤ 200 KB compressed (measured on the built `.glb`).
+
+## Workflow tips
+
+- Start in Blender 5.x, Units > Metric > Metre.
+- Build from the wheelbase outward — wheels first, chassis next, cabin last, antenna last.
+- Use modifiers (Mirror for symmetry, Bevel for edge softening). Apply before export.
+- For the paint material, put a "paint" substring in the Blender material name (e.g. `Body_paint`, `AccentPaint`).
+- Before exporting, run File → External → Make All Paths Relative.
+- Export dialog: Format GLB, Selection Only off, Transform Y-up, Geometry Apply Modifiers on, Materials Export, Animation off.
+
+## Out-of-scope for this brief
+
+- LOD meshes (Phase 2 will author a low-poly variant if needed).
+- Damage / crash state.
+- Interior detailing beyond a seat bulge.
+- Decals and sponsor marks.
+
+## When this brief is fulfilled
+
+Drop the `.glb` into `public/content/meshes/cars/boulevard.glb` and the game will pick it up automatically. The procedural box-car in `src/render/car-mesh.ts` stays as the fallback so development can continue without the GLB present.
